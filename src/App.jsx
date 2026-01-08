@@ -30,13 +30,9 @@ const DEFAULT_TAB_CONFIG = {
   subjectCounts: { "英語": 4, "数学": 4, "国語": 3, "理科": 4, "社会": 3 }
 };
 
-// ★ v31: 動的カラー生成 (どんな科目名でも色が付く)
 const getSubjectColor = (subject) => {
   if (!subject) return "bg-white";
-  const colors = [
-    "bg-red-100", "bg-blue-100", "bg-yellow-100", "bg-green-100", "bg-purple-100",
-    "bg-pink-100", "bg-indigo-100", "bg-teal-100", "bg-orange-100", "bg-lime-100"
-  ];
+  const colors = ["bg-red-100", "bg-blue-100", "bg-yellow-100", "bg-green-100", "bg-purple-100", "bg-pink-100", "bg-indigo-100", "bg-teal-100", "bg-orange-100", "bg-lime-100"];
   let hash = 0;
   for (let i = 0; i < subject.length; i++) hash += subject.charCodeAt(i);
   return colors[hash % colors.length];
@@ -47,7 +43,7 @@ const toCircleNum = (num) => {
   return circles[num] || `(${num})`;
 };
 
-const STORAGE_KEY_PROJECT = 'winter_schedule_project_v31';
+const STORAGE_KEY_PROJECT = 'winter_schedule_project_v32';
 
 export default function ScheduleApp() {
   const [project, setProject] = useState(() => {
@@ -267,11 +263,9 @@ export default function ScheduleApp() {
     pushHistory({ ...project, externalCounts: counts });
   };
 
-  // ★ v31: ゴミデータお掃除機能 (Cleaner)
   const cleanSchedule = (proj) => {
     const newTabs = proj.tabs.map(tab => {
       const newSch = {};
-      // 現在の設定にあるセルだけを残す
       tab.config.dates.forEach(d => {
         tab.config.periods.forEach(p => {
           tab.config.classes.forEach(c => {
@@ -289,13 +283,12 @@ export default function ScheduleApp() {
   const handleResetAll = () => { if(window.confirm("全データ削除しますか？")) { localStorage.removeItem(STORAGE_KEY_PROJECT); window.location.reload(); }};
   const applyPattern = (pat) => { const newTabs = project.tabs.map(t => t.id === project.activeTabId ? { ...t, schedule: pat } : t); pushHistory({ ...project, tabs: newTabs }); setGeneratedPatterns([]); };
   const handleLoadJson = (e) => { const f=e.target.files[0]; if(!f)return; const r=new FileReader(); r.onload=(ev)=>{try{const data=JSON.parse(ev.target.result); pushHistory(cleanSchedule(data)); alert("読込完了");}catch{alert("エラー");}}; r.readAsText(f); e.target.value=''; };
-  // 保存時にお掃除を実行
   const handleSaveJson = () => { 
     const cleaned = cleanSchedule(project);
-    const b=new Blob([JSON.stringify(cleaned,null,2)],{type:"application/json"}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`schedule_project_v31.json`; a.click(); 
+    const b=new Blob([JSON.stringify(cleaned,null,2)],{type:"application/json"}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`schedule_project_v32.json`; a.click(); 
   };
 
-  // ★ v31: 自動生成ロジックの修正（科目固定・講師自動割り当て対応）
+  // ★ v32: 賢い自動生成 (Load Balancing)
   const generateSchedule = () => {
     setIsGenerating(true);
     setTimeout(() => {
@@ -303,9 +296,8 @@ export default function ScheduleApp() {
       currentConfig.dates.forEach(d => currentConfig.periods.forEach(p => currentConfig.classes.forEach(c => {
         const k=`${d}-${p}-${c}`;
         const entry = currentSchedule[k];
-        // 「科目がなくて、講師もいない」または「科目はあるが、講師がいない」コマを埋める対象にする
         if (!entry || !entry.subject || !entry.teacher) {
-          slots.push({d, p, c, k, fixedSubject: entry?.subject}); // fixedSubjectがある場合はそれを優先
+          slots.push({d, p, c, k, fixedSubject: entry?.subject});
         }
       })));
       
@@ -313,55 +305,53 @@ export default function ScheduleApp() {
       Object.keys(currentSchedule).forEach(k => { const e=currentSchedule[k]; if(e?.subject) counts[k.split('-')[2]][e.subject]++; });
 
       const solve = (idx, tempSch, tempCnt, iter={c:0}) => {
-        if (iter.c++ > 50000 || solutions.length >= 3) return;
+        if (iter.c++ > 80000 || solutions.length >= 3) return; // 試行回数を少し増加
         if (idx >= slots.length) { solutions.push(JSON.parse(JSON.stringify(tempSch))); return; }
         
         const {d, p, c, k, fixedSubject} = slots[idx];
-        
-        // 科目が既に決まっているならそれを使う。なければ候補から選ぶ。
         const subjectsToTry = fixedSubject ? [fixedSubject] : commonSubjects.sort(() => Math.random() - 0.5);
 
         for (const s of subjectsToTry) {
-          // 科目が固定でない場合のみ、コマ数制限チェック
           if (!fixedSubject && (tempCnt[c][s]||0) >= currentConfig.subjectCounts[s]) continue;
           if (!fixedSubject && currentConfig.periods.some(per => tempSch[`${d}-${per}-${c}`]?.subject === s)) continue;
           
           const validT = project.teachers.filter(t => t.subjects.includes(s) && !t.ngClasses?.includes(c) && !t.ngSlots?.includes(`${d}-${p}`));
-          const availT = validT.filter(t => {
+          
+          let availT = validT.map(t => {
              const dayKey = `${d}-${t.name}`;
              const ext = analysis.teacherDailyCounts[dayKey]?.external || 0;
              const currentTabCount = analysis.teacherDailyCounts[dayKey]?.current || 0; 
-             return (ext + currentTabCount) < 5; 
-          });
-          const tObj = availT[Math.floor(Math.random()*availT.length)];
-          if (tObj) {
-             if (!currentConfig.classes.some(oc => oc!==c && tempSch[`${d}-${p}-${oc}`]?.teacher===tObj.name)) {
-                tempSch[k] = { subject: s, teacher: tObj.name }; 
+             // tempSch内でのカウントも考慮したいが重くなるので、現在の解析値を利用
+             return { teacher: t, load: ext + currentTabCount };
+          }).filter(item => item.load < 5); // 1日5コマ未満
+
+          // ★ v32: 負荷が低い順に並べ替えて、低い人から優先的に選ぶ (Load Balancing)
+          // 完全な順番通りだと同じ人ばかりになるので、少しランダム性を残す
+          availT.sort((a, b) => a.load - b.load + (Math.random() * 0.5)); 
+
+          for (const item of availT) {
+             const tName = item.teacher.name;
+             if (!currentConfig.classes.some(oc => oc!==c && tempSch[`${d}-${p}-${oc}`]?.teacher===tName)) {
+                tempSch[k] = { subject: s, teacher: tName }; 
                 if(!fixedSubject) tempCnt[c][s]++;
                 
                 solve(idx+1, tempSch, tempCnt, iter);
                 if (solutions.length>=3) return;
                 
-                // Backtrack
-                if(fixedSubject) {
-                   // 固定科目の場合は講師だけ消す (重要！)
-                   tempSch[k] = { subject: fixedSubject, teacher: "" };
-                } else {
-                   delete tempSch[k];
-                   tempCnt[c][s]--;
-                }
+                if(fixedSubject) tempSch[k] = { subject: fixedSubject, teacher: "" };
+                else { delete tempSch[k]; tempCnt[c][s]--; }
              }
           }
         }
       };
       solve(0, JSON.parse(JSON.stringify(currentSchedule)), JSON.parse(JSON.stringify(counts)));
       setGeneratedPatterns(solutions); setIsGenerating(false);
-      if(solutions.length===0) alert("生成パターンが見つかりませんでした。条件を緩和するか、手動で埋めてください。");
+      if(solutions.length===0) alert("条件に合うパターンが見つかりませんでした。\n条件を緩和するか、一部手動で埋めてください。");
     }, 100);
   };
 
-  const handleDownloadExcel = () => { /* Export Logic Same as v28 */ 
-    const cleaned = cleanSchedule(project); // Export前にも掃除
+  const handleDownloadExcel = () => { /* Export Logic */ 
+    const cleaned = cleanSchedule(project);
     const wb = XLSX.utils.book_new();
     cleaned.tabs.forEach(tab => {
       const ws = XLSX.utils.aoa_to_sheet([["日付","時限",...tab.config.classes], ...tab.config.dates.flatMap(d=>tab.config.periods.map(p=>[d,p,...tab.config.classes.map(c=> { const e=tab.schedule[`${d}-${p}-${c}`]; return e&&e.subject?`${e.subject}\n${e.teacher}`:""; })]))]);
@@ -372,7 +362,7 @@ export default function ScheduleApp() {
 
   const SummaryTable = ({ target }) => { 
     const totals = {}; project.teachers.forEach(t=>totals[t.name]=0);
-    Object.values(target).forEach(e=>{if(e.teacher)totals[e.teacher]++});
+    Object.values(target).forEach(e=>{if(e.teacher && e.teacher !== "未定") totals[e.teacher]++});
     return (
       <div className="bg-white p-4 border rounded">
         <h3 className="font-bold mb-2">📊 この案の集計</h3>
@@ -406,7 +396,7 @@ export default function ScheduleApp() {
       {/* Header */}
       <div className="flex justify-between items-center mb-2 no-print bg-white p-3 rounded shadow-sm border-b border-gray-200">
         <div className="flex items-center gap-2">
-          <h1 className="text-xl font-bold text-gray-700">📅 時間割作成くん v31</h1>
+          <h1 className="text-xl font-bold text-gray-700">📅 時間割作成くん v32</h1>
           <span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded border border-green-200">{saveStatus}</span>
         </div>
         <div className="flex gap-2">
@@ -533,15 +523,17 @@ export default function ScheduleApp() {
                         const isOver = maxCnt > 0 && order > maxCnt;
                         const filteredTeachers = entry.subject ? project.teachers.filter(t => t.subjects.includes(entry.subject)) : project.teachers;
                         
-                        // ★ v31: 動的カラー
+                        // ★ v32: ロック時の視覚効果（ストライプ）
                         const cellColor = isConflict ? "bg-red-200" : getSubjectColor(entry.subject);
+                        const lockedStyle = isLocked ? "border-2 border-gray-600 opacity-90" : "border border-gray-200";
+                        const stripeStyle = isLocked ? { backgroundImage: 'repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(0,0,0,0.05) 5px, rgba(0,0,0,0.05) 10px)' } : {};
 
                         return (
                           <td 
                             key={c} id={`select-${dIdx}-${pIdx}-${cIdx}-cell`} className={`border-r last:border-0 ${isCompact ? "p-0.5" : "p-2"}`}
                             draggable={!isLocked && !!entry.subject} onDragStart={(e) => handleDragStart(e, key, entry)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, key, entry)} onContextMenu={(e) => handleContextMenu(e, d, p, c)}
                           >
-                            <div className={`flex flex-col rounded h-full ${cellColor} ${isLocked ? "border-2 border-gray-500" : "border border-gray-200"} ${isCompact ? "gap-0 p-0.5" : "gap-1 p-1.5"}`}>
+                            <div className={`flex flex-col rounded h-full ${cellColor} ${lockedStyle} ${isCompact ? "gap-0 p-0.5" : "gap-1 p-1.5"}`} style={stripeStyle}>
                               <div className="flex justify-between items-start">
                                 <div className="relative flex-1">
                                   <select 
@@ -569,8 +561,13 @@ export default function ScheduleApp() {
                                   const dayKey = `${d}-${t.name}`;
                                   const daily = analysis.teacherDailyCounts[dayKey] || { total: 0 };
                                   const isNg = t.ngSlots?.includes(`${d}-${p}`);
+                                  
+                                  // ★ v32: 未定はカウントしない
                                   let label = t.name;
-                                  if (isNg) label += " (NG)"; else label += ` (計${daily.total})`;
+                                  if (t.name !== "未定") {
+                                    if (isNg) label += " (NG)"; else label += ` (計${daily.total})`;
+                                  }
+                                  
                                   return <option key={t.name} value={t.name} className={isNg ? "bg-gray-300 text-gray-500" : (daily.total >= 4 ? "bg-yellow-100" : "")} disabled={isNg}>{label}</option>;
                                 })}
                               </select>
