@@ -46,7 +46,6 @@ const toCircleNum = (num) => {
 
 export default function ScheduleApp() {
   const [schedule, setSchedule] = useState({});
-  // ★ v14: 履歴管理用のState
   const [history, setHistory] = useState([{}]);
   const [historyIndex, setHistoryIndex] = useState(0);
 
@@ -58,16 +57,10 @@ export default function ScheduleApp() {
   const [isGenerating, setIsGenerating] = useState(false);
   const fileInputRef = useRef(null);
 
-  // --- ★ v14: 履歴操作関数 ---
-  // スケジュールを更新するときは必ずこれを使う
   const updateScheduleWithHistory = (newSchedule) => {
-    // 現在の履歴より先（Redo用）を切り捨てて、新しい状態を追加
     const nextHistory = history.slice(0, historyIndex + 1);
     nextHistory.push(newSchedule);
-    
-    // 履歴が多すぎたら古いのを捨てる（メモリ節約：最大50回分）
     if (nextHistory.length > 50) nextHistory.shift();
-    
     setHistory(nextHistory);
     setHistoryIndex(nextHistory.length - 1);
     setSchedule(newSchedule);
@@ -89,7 +82,6 @@ export default function ScheduleApp() {
     }
   };
 
-  // キーボードショートカット設定
   useEffect(() => {
     const handleKeyDown = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
@@ -106,15 +98,11 @@ export default function ScheduleApp() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [history, historyIndex]);
 
-  // --- 操作関数 (履歴対応版に書き換え) ---
   const handleAssign = (date, period, className, type, value) => {
     const key = `${date}-${period}-${className}`;
     if (schedule[key]?.locked) return;
-
-    // 現在の状態をコピーして新しいオブジェクトを作成
     const newSchedule = { ...schedule };
     if (!newSchedule[key]) newSchedule[key] = {};
-
     if (type === 'subject') {
       newSchedule[key] = { ...newSchedule[key], subject: value, teacher: "" };
     } else {
@@ -127,18 +115,15 @@ export default function ScheduleApp() {
     const key = `${date}-${period}-${className}`;
     const newSchedule = { ...schedule };
     if (!newSchedule[key]) newSchedule[key] = {};
-    
     newSchedule[key] = { ...newSchedule[key], locked: !newSchedule[key].locked };
     updateScheduleWithHistory(newSchedule);
   };
 
   const handleClearUnlocked = () => {
-    if (!window.confirm("ロックされていないコマを全て削除しますか？\n（ロックされたコマは残ります）")) return;
+    if (!window.confirm("ロックされていないコマを全て削除しますか？")) return;
     const newSchedule = {};
     Object.keys(schedule).forEach(key => {
-      if (schedule[key].locked) {
-        newSchedule[key] = schedule[key];
-      }
+      if (schedule[key].locked) newSchedule[key] = schedule[key];
     });
     updateScheduleWithHistory(newSchedule);
   };
@@ -158,16 +143,10 @@ export default function ScheduleApp() {
         const data = JSON.parse(e.target.result);
         if (data.config && data.schedule) {
           const patchedConfig = { ...data.config, subjectCounts: data.config.subjectCounts || INITIAL_CONFIG.subjectCounts };
-          const patchedTeachers = patchedConfig.teachers.map(t => ({
-             ...t, 
-             ngSlots: t.ngSlots || [],
-             ngClasses: t.ngClasses || [] 
-          }));
+          const patchedTeachers = patchedConfig.teachers.map(t => ({ ...t, ngSlots: t.ngSlots || [], ngClasses: t.ngClasses || [] }));
           setConfig({ ...patchedConfig, teachers: patchedTeachers });
-          
-          // 読込時も履歴に追加
           updateScheduleWithHistory(data.schedule);
-          alert("ファイルを読み込みました");
+          alert("読込完了");
         } else { alert("データ形式エラー"); }
       } catch (error) { alert("読込エラー"); }
     };
@@ -175,17 +154,13 @@ export default function ScheduleApp() {
     event.target.value = '';
   };
 
-  // --- 以下、既存の設定変更・生成・出力関数 ---
   const handleListConfigChange = (key, valueString) => {
     const newArray = valueString.split(',').map(s => s.trim()).filter(s => s !== "");
     setConfig(prev => ({ ...prev, [key]: newArray }));
   };
 
   const handleSubjectCountChange = (subject, count) => {
-    setConfig(prev => ({
-      ...prev,
-      subjectCounts: { ...prev.subjectCounts, [subject]: parseInt(count) || 0 }
-    }));
+    setConfig(prev => ({ ...prev, subjectCounts: { ...prev.subjectCounts, [subject]: parseInt(count) || 0 } }));
   };
 
   const addTeacher = () => {
@@ -278,12 +253,19 @@ export default function ScheduleApp() {
 
   const analysis = useMemo(() => analyzeSchedule(schedule), [schedule, config]);
 
+  // ★ v15: グラフ付き集計表コンポーネント
   const SummaryTable = ({ targetSchedule }) => {
+    // 1. クラス別・科目別集計
     const summary = {};
     config.classes.forEach(cls => {
       summary[cls] = {};
       config.subjects.forEach(subj => summary[cls][subj] = {});
     });
+
+    // 2. 講師別トータル集計 (グラフ用)
+    const teacherTotals = {};
+    config.teachers.forEach(t => teacherTotals[t.name] = 0);
+
     Object.keys(targetSchedule).forEach(key => {
       const entry = targetSchedule[key];
       if (entry && entry.subject && entry.teacher) {
@@ -291,37 +273,73 @@ export default function ScheduleApp() {
         if (cls && summary[cls][entry.subject]) {
           const t = entry.teacher;
           summary[cls][entry.subject][t] = (summary[cls][entry.subject][t] || 0) + 1;
+          
+          // 講師トータル加算
+          teacherTotals[t] = (teacherTotals[t] || 0) + 1;
         }
       }
     });
+
+    // グラフ用にデータを配列化してソート (多い順)
+    const sortedTeachers = Object.entries(teacherTotals)
+      .filter(([_, count]) => count > 0) // 0回の人は表示しない
+      .sort((a, b) => b[1] - a[1]);
+    
+    // グラフの最大値（100%の基準）
+    const maxCount = sortedTeachers.length > 0 ? sortedTeachers[0][1] : 1;
+
     return (
-      <div className="overflow-x-auto border border-gray-300 rounded shadow-sm bg-white p-2">
-        <table className="w-full text-xs border-collapse">
-          <thead>
-            <tr className="bg-gray-100 border-b">
-              <th className="p-2 border-r w-20">クラス</th>
-              {config.subjects.map(s => <th key={s} className="p-2 border-r">{s}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {config.classes.map(cls => (
-              <tr key={cls} className="border-b">
-                <td className="p-2 font-bold bg-gray-50 border-r">{cls}</td>
-                {config.subjects.map(subj => {
-                  const teachers = summary[cls][subj];
-                  const list = Object.entries(teachers).map(([t, c]) => `${t}×${c}`);
-                  return (
-                    <td key={subj} className="p-2 border-r align-top">
-                      {list.length > 0 ? (
-                         <div className="flex flex-col gap-1">{list.map(item => <span key={item} className="bg-blue-50 px-1 rounded text-blue-800">{item}</span>)}</div>
-                      ) : <span className="text-gray-300">-</span>}
-                    </td>
-                  );
-                })}
-              </tr>
+      <div className="flex flex-col gap-6">
+        {/* ① 講師負荷グラフ */}
+        <div className="bg-white p-4 rounded shadow border border-gray-300">
+          <h3 className="font-bold text-gray-700 mb-3 border-b pb-2">📊 講師別 担当コマ数ランキング</h3>
+          <div className="space-y-2">
+            {sortedTeachers.map(([name, count]) => (
+              <div key={name} className="flex items-center text-sm">
+                <div className="w-20 font-bold text-gray-700 text-right pr-2 truncate">{name}</div>
+                <div className="flex-1 bg-gray-100 rounded-full h-4 overflow-hidden">
+                  <div 
+                    className={`h-full ${name === "未定" ? "bg-red-400" : "bg-blue-500"}`} 
+                    style={{ width: `${(count / maxCount) * 100}%` }}
+                  ></div>
+                </div>
+                <div className="w-10 pl-2 font-bold text-gray-600">{count}</div>
+              </div>
             ))}
-          </tbody>
-        </table>
+            {sortedTeachers.length === 0 && <div className="text-gray-400 text-center">データがありません</div>}
+          </div>
+        </div>
+
+        {/* ② クラス別詳細表 */}
+        <div className="overflow-x-auto border border-gray-300 rounded shadow-sm bg-white p-2">
+          <h3 className="font-bold text-gray-700 mb-3 pl-2">📑 クラス別 詳細内訳</h3>
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="bg-gray-100 border-b">
+                <th className="p-2 border-r w-20">クラス</th>
+                {config.subjects.map(s => <th key={s} className="p-2 border-r">{s}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {config.classes.map(cls => (
+                <tr key={cls} className="border-b">
+                  <td className="p-2 font-bold bg-gray-50 border-r">{cls}</td>
+                  {config.subjects.map(subj => {
+                    const teachers = summary[cls][subj];
+                    const list = Object.entries(teachers).map(([t, c]) => `${t}×${c}`);
+                    return (
+                      <td key={subj} className="p-2 border-r align-top">
+                        {list.length > 0 ? (
+                           <div className="flex flex-col gap-1">{list.map(item => <span key={item} className="bg-blue-50 px-1 rounded text-blue-800">{item}</span>)}</div>
+                        ) : <span className="text-gray-300">-</span>}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     );
   };
@@ -420,6 +438,7 @@ export default function ScheduleApp() {
   };
 
   const handleDownloadExcel = () => {
+    // 1. 時間割シート
     const headerRow = ["日付", "時限", ...config.classes];
     const dataRows = [];
     config.dates.forEach(date => {
@@ -438,19 +457,35 @@ export default function ScheduleApp() {
       });
     });
     const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet([headerRow, ...dataRows]);
-    ws['!cols'] = [{ wch: 15 }, { wch: 15 }, ...config.classes.map(() => ({ wch: 20 }))];
-    XLSX.utils.book_append_sheet(wb, ws, "時間割");
+    const ws1 = XLSX.utils.aoa_to_sheet([headerRow, ...dataRows]);
+    ws1['!cols'] = [{ wch: 15 }, { wch: 15 }, ...config.classes.map(() => ({ wch: 20 }))];
+    XLSX.utils.book_append_sheet(wb, ws1, "時間割");
+
+    // 2. 集計シート (v15追加)
+    // 講師別集計を計算
+    const teacherTotals = {};
+    Object.keys(schedule).forEach(key => {
+      const t = schedule[key]?.teacher;
+      if(t) teacherTotals[t] = (teacherTotals[t] || 0) + 1;
+    });
+    const summaryRows = [["講師名", "担当コマ数"]];
+    Object.entries(teacherTotals)
+      .sort((a, b) => b[1] - a[1]) // 多い順
+      .forEach(([name, count]) => summaryRows.push([name, count]));
+    
+    const ws2 = XLSX.utils.aoa_to_sheet(summaryRows);
+    XLSX.utils.book_append_sheet(wb, ws2, "講師別集計");
+
     XLSX.writeFile(wb, `時間割_${new Date().toISOString().slice(0,10)}.xlsx`);
   };
 
   const handleSaveJson = () => {
-    const saveData = { version: 14, config, schedule };
+    const saveData = { version: 15, config, schedule };
     const blob = new Blob([JSON.stringify(saveData, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `schedule_v14_${new Date().toISOString().slice(0,10)}.json`;
+    link.download = `schedule_v15_${new Date().toISOString().slice(0,10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -459,19 +494,16 @@ export default function ScheduleApp() {
     <div className="p-4 bg-gray-50 min-h-screen font-sans">
       <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">冬期講習 時間割エディタ v14</h1>
-          <p className="text-sm text-gray-600">Undo/Redo機能搭載</p>
+          <h1 className="text-2xl font-bold text-gray-800">冬期講習 時間割エディタ v15</h1>
+          <p className="text-sm text-gray-600">統計グラフ機能搭載</p>
         </div>
         <div className="flex gap-2">
-           {/* ★ 履歴操作ボタン */}
            <div className="flex bg-white rounded shadow border border-gray-300 mr-2">
              <button onClick={undo} disabled={historyIndex === 0} className="px-3 py-2 text-gray-600 hover:bg-gray-100 disabled:opacity-30 border-r" title="元に戻す (Ctrl+Z)">↩️</button>
              <button onClick={redo} disabled={historyIndex === history.length - 1} className="px-3 py-2 text-gray-600 hover:bg-gray-100 disabled:opacity-30" title="やり直し (Ctrl+Y)">↪️</button>
            </div>
-
            <button onClick={handleDownloadExcel} className="px-4 py-2 bg-green-700 text-white rounded hover:bg-green-800 shadow flex items-center gap-2">📊 Excel出力</button>
            <button onClick={handleClearUnlocked} className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 shadow flex items-center gap-2">🗑️ 未ロック削除</button>
-           
            <button onClick={() => setShowSummary(!showSummary)} className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 shadow flex items-center gap-2">📊 集計</button>
            <button onClick={() => setShowConfig(!showConfig)} className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 shadow flex items-center gap-2">⚙️ 設定</button>
            <button onClick={generateSchedule} disabled={isGenerating} className={`px-4 py-2 text-white rounded shadow flex items-center gap-2 ${isGenerating ? "bg-purple-400 cursor-wait" : "bg-purple-600 hover:bg-purple-700"}`}>
@@ -485,7 +517,7 @@ export default function ScheduleApp() {
 
       {showSummary && (
         <div className="mb-6 animate-fade-in">
-          <h2 className="font-bold text-lg text-indigo-900 mb-2">📊 現在の授業数カウント</h2>
+          <h2 className="font-bold text-lg text-indigo-900 mb-2">📊 統計レポート</h2>
           <SummaryTable targetSchedule={schedule} />
         </div>
       )}
@@ -500,6 +532,7 @@ export default function ScheduleApp() {
                   <div className="font-bold text-lg text-purple-800">案 {idx + 1}</div>
                   <button onClick={() => applyPattern(pattern)} className="bg-purple-600 text-white px-4 py-1 rounded hover:bg-purple-700 shadow">この案を適用</button>
                 </div>
+                {/* 提案段階でもグラフを見られるようにします */}
                 <SummaryTable targetSchedule={pattern} />
               </div>
             ))}
