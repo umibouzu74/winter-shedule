@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 
 // --- 初期データ定義 ---
@@ -46,6 +46,10 @@ const toCircleNum = (num) => {
 
 export default function ScheduleApp() {
   const [schedule, setSchedule] = useState({});
+  // ★ v14: 履歴管理用のState
+  const [history, setHistory] = useState([{}]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+
   const [config, setConfig] = useState(INITIAL_CONFIG);
   const [showConfig, setShowConfig] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
@@ -54,42 +58,124 @@ export default function ScheduleApp() {
   const [isGenerating, setIsGenerating] = useState(false);
   const fileInputRef = useRef(null);
 
-  // --- 操作関数 ---
-  const handleAssign = (date, period, className, type, value) => {
-    const key = `${date}-${period}-${className}`;
-    // ロックされていたら変更不可
-    if (schedule[key]?.locked) return;
+  // --- ★ v14: 履歴操作関数 ---
+  // スケジュールを更新するときは必ずこれを使う
+  const updateScheduleWithHistory = (newSchedule) => {
+    // 現在の履歴より先（Redo用）を切り捨てて、新しい状態を追加
+    const nextHistory = history.slice(0, historyIndex + 1);
+    nextHistory.push(newSchedule);
+    
+    // 履歴が多すぎたら古いのを捨てる（メモリ節約：最大50回分）
+    if (nextHistory.length > 50) nextHistory.shift();
+    
+    setHistory(nextHistory);
+    setHistoryIndex(nextHistory.length - 1);
+    setSchedule(newSchedule);
+  };
 
-    if (type === 'subject') {
-      setSchedule(prev => ({ ...prev, [key]: { ...prev[key], subject: value, teacher: "" } }));
-    } else {
-      setSchedule(prev => ({ ...prev, [key]: { ...prev[key], [type]: value } }));
+  const undo = () => {
+    if (historyIndex > 0) {
+      const prevIndex = historyIndex - 1;
+      setHistoryIndex(prevIndex);
+      setSchedule(history[prevIndex]);
     }
   };
 
-  // ★ v13 新機能: ロック切り替え
+  const redo = () => {
+    if (historyIndex < history.length - 1) {
+      const nextIndex = historyIndex + 1;
+      setHistoryIndex(nextIndex);
+      setSchedule(history[nextIndex]);
+    }
+  };
+
+  // キーボードショートカット設定
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [history, historyIndex]);
+
+  // --- 操作関数 (履歴対応版に書き換え) ---
+  const handleAssign = (date, period, className, type, value) => {
+    const key = `${date}-${period}-${className}`;
+    if (schedule[key]?.locked) return;
+
+    // 現在の状態をコピーして新しいオブジェクトを作成
+    const newSchedule = { ...schedule };
+    if (!newSchedule[key]) newSchedule[key] = {};
+
+    if (type === 'subject') {
+      newSchedule[key] = { ...newSchedule[key], subject: value, teacher: "" };
+    } else {
+      newSchedule[key] = { ...newSchedule[key], [type]: value };
+    }
+    updateScheduleWithHistory(newSchedule);
+  };
+
   const toggleLock = (date, period, className) => {
     const key = `${date}-${period}-${className}`;
-    setSchedule(prev => ({
-      ...prev,
-      [key]: { ...prev[key], locked: !prev[key]?.locked }
-    }));
+    const newSchedule = { ...schedule };
+    if (!newSchedule[key]) newSchedule[key] = {};
+    
+    newSchedule[key] = { ...newSchedule[key], locked: !newSchedule[key].locked };
+    updateScheduleWithHistory(newSchedule);
   };
 
-  // ★ v13 新機能: 未ロックのみクリア
   const handleClearUnlocked = () => {
     if (!window.confirm("ロックされていないコマを全て削除しますか？\n（ロックされたコマは残ります）")) return;
-    setSchedule(prev => {
-      const next = {};
-      Object.keys(prev).forEach(key => {
-        if (prev[key].locked) {
-          next[key] = prev[key];
-        }
-      });
-      return next;
+    const newSchedule = {};
+    Object.keys(schedule).forEach(key => {
+      if (schedule[key].locked) {
+        newSchedule[key] = schedule[key];
+      }
     });
+    updateScheduleWithHistory(newSchedule);
   };
 
+  const applyPattern = (pattern) => {
+    updateScheduleWithHistory(pattern);
+    setGeneratedPatterns([]);
+    alert("適用しました！");
+  };
+
+  const handleLoadJson = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target.result);
+        if (data.config && data.schedule) {
+          const patchedConfig = { ...data.config, subjectCounts: data.config.subjectCounts || INITIAL_CONFIG.subjectCounts };
+          const patchedTeachers = patchedConfig.teachers.map(t => ({
+             ...t, 
+             ngSlots: t.ngSlots || [],
+             ngClasses: t.ngClasses || [] 
+          }));
+          setConfig({ ...patchedConfig, teachers: patchedTeachers });
+          
+          // 読込時も履歴に追加
+          updateScheduleWithHistory(data.schedule);
+          alert("ファイルを読み込みました");
+        } else { alert("データ形式エラー"); }
+      } catch (error) { alert("読込エラー"); }
+    };
+    reader.readAsText(file);
+    event.target.value = '';
+  };
+
+  // --- 以下、既存の設定変更・生成・出力関数 ---
   const handleListConfigChange = (key, valueString) => {
     const newArray = valueString.split(',').map(s => s.trim()).filter(s => s !== "");
     setConfig(prev => ({ ...prev, [key]: newArray }));
@@ -149,12 +235,10 @@ export default function ScheduleApp() {
     }
   };
 
-  // --- 分析ロジック ---
   const analyzeSchedule = (currentSchedule) => {
     const conflictMap = {}; 
     const subjectOrders = {};
     const dailySubjectMap = {};
-
     const sortedKeys = [];
     config.dates.forEach(date => {
       config.periods.forEach(period => {
@@ -163,7 +247,6 @@ export default function ScheduleApp() {
         });
       });
     });
-
     config.classes.forEach(cls => {
       const counts = {};
       sortedKeys.filter(k => k.cls === cls).forEach(({ date, period, key }) => {
@@ -175,7 +258,6 @@ export default function ScheduleApp() {
         dailySubjectMap[dailyKey] = (dailySubjectMap[dailyKey] || 0) + 1;
       });
     });
-
     config.dates.forEach(date => {
       config.periods.forEach(period => {
         const teacherCounts = {};
@@ -191,7 +273,6 @@ export default function ScheduleApp() {
         });
       });
     });
-
     return { conflictMap, subjectOrders, dailySubjectMap };
   };
 
@@ -203,7 +284,6 @@ export default function ScheduleApp() {
       summary[cls] = {};
       config.subjects.forEach(subj => summary[cls][subj] = {});
     });
-
     Object.keys(targetSchedule).forEach(key => {
       const entry = targetSchedule[key];
       if (entry && entry.subject && entry.teacher) {
@@ -214,7 +294,6 @@ export default function ScheduleApp() {
         }
       }
     });
-
     return (
       <div className="overflow-x-auto border border-gray-300 rounded shadow-sm bg-white p-2">
         <table className="w-full text-xs border-collapse">
@@ -234,9 +313,7 @@ export default function ScheduleApp() {
                   return (
                     <td key={subj} className="p-2 border-r align-top">
                       {list.length > 0 ? (
-                        <div className="flex flex-col gap-1">
-                          {list.map(item => <span key={item} className="bg-blue-50 px-1 rounded text-blue-800">{item}</span>)}
-                        </div>
+                         <div className="flex flex-col gap-1">{list.map(item => <span key={item} className="bg-blue-50 px-1 rounded text-blue-800">{item}</span>)}</div>
                       ) : <span className="text-gray-300">-</span>}
                     </td>
                   );
@@ -254,19 +331,16 @@ export default function ScheduleApp() {
     setTimeout(() => {
       const solutions = [];
       const slots = [];
-      
       config.dates.forEach(date => {
         config.periods.forEach(period => {
           config.classes.forEach(cls => {
             const key = `${date}-${period}-${cls}`;
-            // 既に埋まっている、またはロックされているマスはスキップ
             if (!schedule[key] || !schedule[key].subject || !schedule[key].teacher) {
               slots.push({ key, date, period, cls });
             }
           });
         });
       });
-
       const currentCounts = {};
       config.classes.forEach(cls => {
         currentCounts[cls] = {};
@@ -279,23 +353,18 @@ export default function ScheduleApp() {
           if(cls) currentCounts[cls][entry.subject] = (currentCounts[cls][entry.subject] || 0) + 1;
         }
       });
-
       let iterationCount = 0;
       const MAX_ITERATIONS = 5000000; 
-
       const solve = (index, tempSchedule, tempCounts) => {
         iterationCount++;
         if (iterationCount > MAX_ITERATIONS) return;
         if (solutions.length >= 3) return;
-
         if (index >= slots.length) {
           solutions.push(JSON.parse(JSON.stringify(tempSchedule)));
           return;
         }
-
         const slot = slots[index];
         const { date, period, cls, key } = slot;
-        
         const sortedSubjects = [...config.subjects].sort((a, b) => {
           const maxA = config.subjectCounts[a] || 0;
           const maxB = config.subjectCounts[b] || 0;
@@ -303,29 +372,23 @@ export default function ScheduleApp() {
           const remB = maxB - (tempCounts[cls][b] || 0);
           return remB - remA; 
         });
-
         for (const subject of sortedSubjects) {
           if (iterationCount > MAX_ITERATIONS) return;
-
           const maxCount = config.subjectCounts[subject] || 0;
           if ((tempCounts[cls][subject] || 0) >= maxCount) continue;
-
           let isDailyDup = false;
           config.periods.forEach(p => {
              const checkKey = `${date}-${p}-${cls}`;
              if (tempSchedule[checkKey]?.subject === subject) isDailyDup = true;
           });
           if (isDailyDup) continue;
-
           const validTeachers = config.teachers.filter(t => {
             if (!t.subjects.includes(subject)) return false;
             if (t.ngClasses && t.ngClasses.includes(cls)) return false; 
             if (t.ngSlots && t.ngSlots.includes(`${date}-${period}`)) return false;
             return true;
           });
-          
           const shuffledTeachers = [...validTeachers].sort(() => Math.random() - 0.5);
-
           for (const teacherObj of shuffledTeachers) {
              const teacher = teacherObj.name;
              let isTeacherDup = false;
@@ -336,35 +399,24 @@ export default function ScheduleApp() {
                }
              });
              if (isTeacherDup) continue;
-
              tempSchedule[key] = { subject, teacher };
              tempCounts[cls][subject] = (tempCounts[cls][subject] || 0) + 1;
-
              solve(index + 1, tempSchedule, tempCounts);
-
              if (solutions.length >= 3) return;
              delete tempSchedule[key];
              tempCounts[cls][subject] -= 1;
           }
         }
       };
-
       solve(0, JSON.parse(JSON.stringify(schedule)), JSON.parse(JSON.stringify(currentCounts)));
       setGeneratedPatterns(solutions);
       setIsGenerating(false);
-
       if (iterationCount > MAX_ITERATIONS) {
         alert("計算回数が上限を超えました。");
       } else if (solutions.length === 0) {
         alert("条件を満たすパターンが見つかりませんでした。");
       }
     }, 100);
-  };
-
-  const applyPattern = (pattern) => {
-    setSchedule(pattern);
-    setGeneratedPatterns([]);
-    alert("適用しました！");
   };
 
   const handleDownloadExcel = () => {
@@ -393,50 +445,32 @@ export default function ScheduleApp() {
   };
 
   const handleSaveJson = () => {
-    const saveData = { version: 13, config, schedule };
+    const saveData = { version: 14, config, schedule };
     const blob = new Blob([JSON.stringify(saveData, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `schedule_v13_${new Date().toISOString().slice(0,10)}.json`;
+    link.download = `schedule_v14_${new Date().toISOString().slice(0,10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
-  };
-
-  const handleLoadJson = (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const data = JSON.parse(e.target.result);
-        if (data.config && data.schedule) {
-          const patchedConfig = { ...data.config, subjectCounts: data.config.subjectCounts || INITIAL_CONFIG.subjectCounts };
-          const patchedTeachers = patchedConfig.teachers.map(t => ({
-             ...t, 
-             ngSlots: t.ngSlots || [],
-             ngClasses: t.ngClasses || [] 
-          }));
-          setConfig({ ...patchedConfig, teachers: patchedTeachers });
-          setSchedule(data.schedule);
-        } else { alert("データ形式エラー"); }
-      } catch (error) { alert("読込エラー"); }
-    };
-    reader.readAsText(file);
-    event.target.value = '';
   };
 
   return (
     <div className="p-4 bg-gray-50 min-h-screen font-sans">
       <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">冬期講習 時間割エディタ v13</h1>
-          <p className="text-sm text-gray-600">ロック機能＆部分クリア</p>
+          <h1 className="text-2xl font-bold text-gray-800">冬期講習 時間割エディタ v14</h1>
+          <p className="text-sm text-gray-600">Undo/Redo機能搭載</p>
         </div>
         <div className="flex gap-2">
+           {/* ★ 履歴操作ボタン */}
+           <div className="flex bg-white rounded shadow border border-gray-300 mr-2">
+             <button onClick={undo} disabled={historyIndex === 0} className="px-3 py-2 text-gray-600 hover:bg-gray-100 disabled:opacity-30 border-r" title="元に戻す (Ctrl+Z)">↩️</button>
+             <button onClick={redo} disabled={historyIndex === history.length - 1} className="px-3 py-2 text-gray-600 hover:bg-gray-100 disabled:opacity-30" title="やり直し (Ctrl+Y)">↪️</button>
+           </div>
+
            <button onClick={handleDownloadExcel} className="px-4 py-2 bg-green-700 text-white rounded hover:bg-green-800 shadow flex items-center gap-2">📊 Excel出力</button>
-           {/* ★ クリアボタン */}
-           <button onClick={handleClearUnlocked} className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 shadow flex items-center gap-2" title="ロックされていない箇所を削除">🗑️ 未ロック削除</button>
+           <button onClick={handleClearUnlocked} className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 shadow flex items-center gap-2">🗑️ 未ロック削除</button>
            
            <button onClick={() => setShowSummary(!showSummary)} className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 shadow flex items-center gap-2">📊 集計</button>
            <button onClick={() => setShowConfig(!showConfig)} className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 shadow flex items-center gap-2">⚙️ 設定</button>
@@ -597,7 +631,7 @@ export default function ScheduleApp() {
                     const currentData = schedule[key] || {};
                     const currentSubject = currentData.subject || "";
                     const currentTeacher = currentData.teacher || "";
-                    const isLocked = currentData.locked || false; // ロック状態
+                    const isLocked = currentData.locked || false; 
                     
                     const isTeacherConflict = currentTeacher && analysis.conflictMap[`${date}-${period}-${currentTeacher}`];
                     const order = analysis.subjectOrders[key] || 0;
@@ -612,8 +646,6 @@ export default function ScheduleApp() {
                     return (
                       <td key={cls} className={`p-2 border-r last:border-0`}>
                         <div className={`flex flex-col gap-2 p-2 rounded ${borderColor} ${cellBgColor} ${isLocked ? "bg-opacity-100 shadow-inner" : "bg-opacity-90"}`}>
-                          
-                          {/* ★ ロックボタン (左上に配置) */}
                           <div className="flex justify-between items-start">
                              <div className="relative flex-1">
                                 <select 
@@ -631,7 +663,6 @@ export default function ScheduleApp() {
                                 </select>
                                 {currentSubject && <div className={`absolute right-0 top-0 text-xs px-1 rounded pointer-events-none ${isCountOver ? "bg-red-500 text-white" : "bg-white/80 text-blue-800 border"}`}>{toCircleNum(order)} {isCountOver && "⚠"}</div>}
                              </div>
-                             {/* ロックアイコン */}
                              <button 
                                onClick={() => toggleLock(date, period, cls)} 
                                className="text-sm ml-1 focus:outline-none hover:scale-110 transition-transform"
@@ -640,7 +671,6 @@ export default function ScheduleApp() {
                                {isLocked ? "🔒" : "🔓"}
                              </button>
                           </div>
-                          
                           <select 
                             className={`w-full p-1 rounded font-bold cursor-pointer ${isTeacherConflict ? "text-red-600 bg-red-100" : "text-blue-900 bg-white/50"} ${(!currentSubject || isLocked) ? "opacity-50 pointer-events-none" : ""}`}
                             onChange={(e) => handleAssign(date, period, cls, 'teacher', e.target.value)}
@@ -651,10 +681,8 @@ export default function ScheduleApp() {
                             {filteredTeachers.map(t => {
                               const isNgSlot = t.ngSlots?.includes(`${date}-${period}`);
                               const isNgClass = t.ngClasses?.includes(cls);
-                              
                               const isDisabled = isNgSlot || isNgClass;
                               const label = t.name + (isNgSlot ? "(NG時)" : "") + (isNgClass ? "(クラス外)" : "");
-
                               return <option key={t.name} value={t.name} disabled={isDisabled} className={isDisabled ? "text-gray-300 bg-gray-100" : ""}>{label}</option>;
                             })}
                           </select>
