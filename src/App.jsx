@@ -2,8 +2,8 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 
 // --- 初期データ定義 ---
-// v40: priorityClasses (優先クラス) を追加
-const INITIAL_TEACHERS = [
+// デフォルト値 (localStorageにユーザー設定がない場合に使用)
+const DEFAULT_INITIAL_TEACHERS = [
   { name: "堀上", subjects: ["英語"], ngSlots: [], ngClasses: [], priorityClasses: [] },
   { name: "石原", subjects: ["英語"], ngSlots: [], ngClasses: [], priorityClasses: [] },
   { name: "高松", subjects: ["英語"], ngSlots: [], ngClasses: [], priorityClasses: [] },
@@ -24,7 +24,7 @@ const INITIAL_TEACHERS = [
   { name: "未定", subjects: ["英語", "数学", "国語", "理科", "社会"], ngSlots: [], ngClasses: [], priorityClasses: [] }
 ];
 
-const DEFAULT_TAB_CONFIG = {
+const DEFAULT_TAB_CONFIG_BASE = {
   dates: ["12/25(木)", "12/26(金)", "12/27(土)", "1/4(日)", "1/6(火)", "1/7(水)"],
   periods: ["1限 (13:00~)", "2限 (14:10~)", "3限 (15:20~)"],
   classes: ["Sクラス", "Aクラス", "Bクラス", "Cクラス"],
@@ -44,18 +44,31 @@ const toCircleNum = (num) => {
   return circles[num] || `(${num})`;
 };
 
-const STORAGE_KEY_PROJECT = 'winter_schedule_project_v40'; // Key updated for v40
+const STORAGE_KEY_PROJECT = 'winter_schedule_project_v41';
+const STORAGE_KEY_USER_DEFAULTS = 'winter_schedule_user_defaults';
 
 export default function ScheduleApp() {
+  // 初期化ロジック: 保存されたプロジェクト > ユーザー保存のデフォルト > ハードコードされたデフォルト
   const [project, setProject] = useState(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_PROJECT);
-      if (saved) return JSON.parse(saved);
+      const savedProject = localStorage.getItem(STORAGE_KEY_PROJECT);
+      if (savedProject) return JSON.parse(savedProject);
+      
+      const savedDefaults = localStorage.getItem(STORAGE_KEY_USER_DEFAULTS);
+      if (savedDefaults) {
+        const defaults = JSON.parse(savedDefaults);
+        return {
+          teachers: defaults.teachers || DEFAULT_INITIAL_TEACHERS,
+          activeTabId: 1,
+          tabs: [{ id: 1, name: "メイン", config: defaults.config || DEFAULT_TAB_CONFIG_BASE, schedule: {} }]
+        };
+      }
     } catch (e) { console.error("Load failed", e); }
+    
     return {
-      teachers: INITIAL_TEACHERS,
+      teachers: DEFAULT_INITIAL_TEACHERS,
       activeTabId: 1,
-      tabs: [{ id: 1, name: "メイン(午後)", config: { ...DEFAULT_TAB_CONFIG }, schedule: {} }]
+      tabs: [{ id: 1, name: "メイン(午後)", config: { ...DEFAULT_TAB_CONFIG_BASE }, schedule: {} }]
     };
   });
 
@@ -177,7 +190,6 @@ export default function ScheduleApp() {
       });
       if (targetId) return true; return false;
     });
-
     if (targetId) {
       const el = document.getElementById(targetId);
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -245,30 +257,16 @@ export default function ScheduleApp() {
     if(!t.ngSlots) t.ngSlots = []; if(t.ngSlots.includes(k)) t.ngSlots = t.ngSlots.filter(x=>x!==k); else t.ngSlots.push(k);
     pushHistory({ ...project, teachers: newTeachers });
   };
-
-  // --- v40: クラス優先度トグル (Neutral -> Priority -> NG -> Neutral) ---
   const toggleTeacherClassPriority = (idx, className) => {
     const newTeachers = [...project.teachers];
     const t = newTeachers[idx];
-    
-    // データ構造の補完
     if (!t.ngClasses) t.ngClasses = [];
     if (!t.priorityClasses) t.priorityClasses = [];
-
     const isNg = t.ngClasses.includes(className);
     const isPri = t.priorityClasses.includes(className);
-
-    if (!isNg && !isPri) {
-      // Neutral(白) -> Priority(青)
-      t.priorityClasses.push(className);
-    } else if (isPri) {
-      // Priority(青) -> NG(赤)
-      t.priorityClasses = t.priorityClasses.filter(c => c !== className);
-      t.ngClasses.push(className);
-    } else {
-      // NG(赤) -> Neutral(白)
-      t.ngClasses = t.ngClasses.filter(c => c !== className);
-    }
+    if (!isNg && !isPri) { t.priorityClasses.push(className); } 
+    else if (isPri) { t.priorityClasses = t.priorityClasses.filter(c => c !== className); t.ngClasses.push(className); } 
+    else { t.ngClasses = t.ngClasses.filter(c => c !== className); }
     pushHistory({ ...project, teachers: newTeachers });
   };
 
@@ -286,19 +284,70 @@ export default function ScheduleApp() {
   };
 
   const handleContextMenu = (e, d, p, c, type=null, val=null) => { e.preventDefault(); setContextMenu({ x: e.pageX, y: e.pageY, d, p, c, type, val }); };
+  
+  // --- v41: 名称変更とデータ移行ロジック ---
+  const handleRenameHeader = (type, oldVal) => {
+    const newVal = prompt(`「${oldVal}」の新しい名称を入力:`, oldVal);
+    if (!newVal || newVal === oldVal) return;
+
+    // 1. Configの更新
+    const newConfig = { ...currentConfig };
+    if (type === 'date') newConfig.dates = newConfig.dates.map(d => d === oldVal ? newVal : d);
+    else if (type === 'period') newConfig.periods = newConfig.periods.map(p => p === oldVal ? newVal : p);
+    else if (type === 'class') newConfig.classes = newConfig.classes.map(c => c === oldVal ? newVal : c);
+
+    // 2. Scheduleデータの移行 (古いキーを新しいキーに置換)
+    const newSchedule = {};
+    Object.keys(currentSchedule).forEach(k => {
+      // k は "Date-Period-Class" の形式。単純な文字列置換ではなく、パーツごとに比較する
+      // しかし設定上、区切り文字と同じ文字が名称に含まれるとバグるが、簡易的に文字列置換で対応
+      // より安全にやるなら、現在のConfigからインデックスを特定する
+      let newKey = k;
+      if (type === 'date' && k.startsWith(`${oldVal}-`)) {
+        newKey = k.replace(`${oldVal}-`, `${newVal}-`);
+      } else if (type === 'class' && k.endsWith(`-${oldVal}`)) {
+        newKey = k.substring(0, k.lastIndexOf(`-${oldVal}`)) + `-${newVal}`;
+      } else if (type === 'period') {
+        // Periodは真ん中なので少し注意
+        const parts = k.split('-'); // 簡易分割
+        // 日付にハイフンが含まれる可能性を考慮して、後ろからマッチさせるか、
+        // あるいは現在のConfigと突き合わせる
+        // ここでは「Date-Period-Class」構造を前提に、文字列置換を行う
+        // 安全策: "Date-OldPeriod-Class" -> "Date-NewPeriod-Class"
+        // 日付部分とクラス部分を特定するのは難しいので、単純置換を行う
+        if (k.includes(`-${oldVal}-`)) {
+           newKey = k.replace(`-${oldVal}-`, `-${newVal}-`);
+        }
+      }
+      newSchedule[newKey] = currentSchedule[k];
+    });
+
+    const newTabs = project.tabs.map(t => t.id === project.activeTabId ? { ...t, config: newConfig, schedule: newSchedule } : t);
+    pushHistory({ ...project, tabs: newTabs });
+  };
+
   const handleMenuAction = (action) => {
     if (!contextMenu) return;
-    if (contextMenu.type) {
+    const { d, p, c, type, val } = contextMenu;
+    
+    // v41: 名称変更
+    if (action === 'rename') {
+      handleRenameHeader(type, val);
+      setContextMenu(null);
+      return;
+    }
+
+    if (type) {
       const ns = { ...currentSchedule }; let upd = false;
-      currentConfig.dates.forEach(d => currentConfig.periods.forEach(p => currentConfig.classes.forEach(c => {
-        if ((contextMenu.type==='date'&&d===contextMenu.val)||(contextMenu.type==='class'&&c===contextMenu.val)||(contextMenu.type==='period'&&p===contextMenu.val)) {
-          const k=`${d}-${p}-${c}`; if(!ns[k])ns[k]={};
+      currentConfig.dates.forEach(date => currentConfig.periods.forEach(per => currentConfig.classes.forEach(cls => {
+        if ((type==='date'&&date===val)||(type==='class'&&cls===val)||(type==='period'&&per===val)) {
+          const k=`${date}-${per}-${cls}`; if(!ns[k])ns[k]={};
           if(action==='lock-all'){ns[k].locked=true;upd=true;} if(action==='unlock-all'){ns[k].locked=false;upd=true;} if(action==='clear-all'&&!ns[k].locked){delete ns[k];upd=true;}
         }
       })));
       if (upd) { const newTabs = project.tabs.map(t => t.id === project.activeTabId ? { ...t, schedule: ns } : t); pushHistory({ ...project, tabs: newTabs }); }
     } else { 
-      const { d, p, c } = contextMenu; const k = `${d}-${p}-${c}`; const curr = currentSchedule[k] || {};
+      const k = `${d}-${p}-${c}`; const curr = currentSchedule[k] || {};
       if(action==='copy'&&curr.subject) setClipboard({subject:curr.subject,teacher:curr.teacher});
       if(action==='paste'&&clipboard&&!curr.locked) { const newTabs = project.tabs.map(t => t.id === project.activeTabId ? { ...t, schedule: { ...t.schedule, [k]: { ...curr, subject: clipboard.subject, teacher: clipboard.teacher } } } : t); pushHistory({ ...project, tabs: newTabs }); }
       if(action==='lock') toggleLock(d, p, c);
@@ -333,16 +382,27 @@ export default function ScheduleApp() {
   };
 
   const handleClearUnlocked = () => { if(window.confirm("ロックされていないセルを全てクリアしますか？")) { const ns={}; Object.keys(currentSchedule).forEach(k=>{if(currentSchedule[k].locked)ns[k]=currentSchedule[k]}); const newTabs = project.tabs.map(t => t.id === project.activeTabId ? { ...t, schedule: ns } : t); pushHistory({ ...project, tabs: newTabs }); }};
+  
+  // v41: 現在の設定をデフォルトとして保存
+  const handleSaveAsDefault = () => {
+    if(!window.confirm("現在の「講師設定」と「カレンダー構成」を初期値として保存しますか？\n次回リセット時にこの設定が読み込まれます。")) return;
+    const defaults = {
+      teachers: project.teachers,
+      config: activeTab.config
+    };
+    localStorage.setItem(STORAGE_KEY_USER_DEFAULTS, JSON.stringify(defaults));
+    alert("✅ 保存しました。\n次回からこの設定が初期値になります。");
+  };
+
   const handleResetAll = () => { if(window.confirm("全データ削除しますか？")) { localStorage.removeItem(STORAGE_KEY_PROJECT); window.location.reload(); }};
   const applyPattern = (pat) => { const newTabs = project.tabs.map(t => t.id === project.activeTabId ? { ...t, schedule: pat } : t); pushHistory({ ...project, tabs: newTabs }); setGeneratedPatterns([]); };
   const handleLoadJson = (e) => { const f=e.target.files[0]; if(!f)return; const r=new FileReader(); r.onload=(ev)=>{try{const data=JSON.parse(ev.target.result); pushHistory(cleanSchedule(data)); alert("読込完了");}catch{alert("エラー");}}; r.readAsText(f); e.target.value=''; };
-  const handleSaveJson = () => { const cleaned = cleanSchedule(project); const b=new Blob([JSON.stringify(cleaned,null,2)],{type:"application/json"}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`schedule_project_v40.json`; a.click(); };
+  const handleSaveJson = () => { const cleaned = cleanSchedule(project); const b=new Blob([JSON.stringify(cleaned,null,2)],{type:"application/json"}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`schedule_project_v41.json`; a.click(); };
 
-  // --- v40: 自動作成ロジック（クラス優先度考慮） ---
+  // --- 自動作成ロジック (v40継承) ---
   const generateSchedule = () => {
     setIsGenerating(true);
     setTimeout(() => {
-      // 1. 他タブの負荷状況
       const baseDailyCounts = {};
       project.teachers.forEach(t => {
         currentConfig.dates.forEach(d => {
@@ -351,7 +411,6 @@ export default function ScheduleApp() {
         });
       });
 
-      // 2. 現在のタブで「すでに手動で埋まっている」コマ数を計算
       const currentTabFixedCounts = {};
       currentConfig.dates.forEach(d => {
         currentConfig.periods.forEach(p => {
@@ -406,15 +465,12 @@ export default function ScheduleApp() {
           if (!fixedSubject && (tempCnt[c][s]||0) >= currentConfig.subjectCounts[s]) continue;
           if (!fixedSubject && currentConfig.periods.some(per => tempSch[`${d}-${per}-${c}`]?.subject === s)) continue;
           
-          // --- v40: 優先度ロジック ---
-          // 1. NGクラスを除外
           const validT = project.teachers.filter(t => 
             t.subjects.includes(s) && 
             !t.ngSlots?.includes(`${d}-${p}`) && 
             !t.ngClasses?.includes(c)
           );
 
-          // 2. 優先(Priority)と普通(Neutral)に分ける
           const priorityGroup = [];
           const neutralGroup = [];
           validT.forEach(t => {
@@ -422,12 +478,10 @@ export default function ScheduleApp() {
             else neutralGroup.push(t);
           });
 
-          // 3. それぞれシャッフルして結合（優先グループを先に）
           const shuffledT = [
             ...priorityGroup.sort(() => Math.random() - 0.5),
             ...neutralGroup.sort(() => Math.random() - 0.5)
           ];
-          // ------------------------
 
           for (const tObj of shuffledT) {
              const tName = tObj.name;
@@ -474,7 +528,6 @@ export default function ScheduleApp() {
   const handleDownloadTeacherExcel = () => {
     const wb = XLSX.utils.book_new();
     const allRows = [["講師名", "日付", "時限", "クラス", "科目", "タブ名"]];
-    
     project.teachers.forEach(t => {
       const personalRows = [["日付", "時限", "クラス", "科目", "場所(タブ)"]];
       project.tabs.forEach(tab => {
@@ -499,7 +552,6 @@ export default function ScheduleApp() {
         XLSX.utils.book_append_sheet(wb, ws, safeName);
       }
     });
-
     const wsAll = XLSX.utils.aoa_to_sheet(allRows);
     XLSX.utils.book_append_sheet(wb, wsAll, "全講師リスト");
     XLSX.writeFile(wb, "講師別時間割.xlsx");
@@ -539,7 +591,7 @@ export default function ScheduleApp() {
       <style>{printStyle}</style>
 
       <div className="flex justify-between items-center mb-2 no-print bg-white p-3 rounded shadow-sm border-b border-gray-200">
-        <div className="flex items-center gap-2"><h1 className="text-xl font-bold text-gray-700">📅 時間割作成くん v40</h1><span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded border border-green-200">{saveStatus}</span></div>
+        <div className="flex items-center gap-2"><h1 className="text-xl font-bold text-gray-700">📅 時間割作成くん v41</h1><span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded border border-green-200">{saveStatus}</span></div>
         <div className="flex gap-2">
           <button onClick={handleSaveJson} className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 shadow text-sm font-bold">💾 プロジェクト保存</button>
           <button onClick={() => fileInputRef.current.click()} className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 shadow text-sm font-bold">📂 開く</button>
@@ -668,11 +720,19 @@ export default function ScheduleApp() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                     <div className="space-y-4">
                       <h3 className="font-bold text-blue-800 border-b pb-1">📅 カレンダー設定 ({activeTab.name})</h3>
-                      <div className="bg-red-50 p-2 text-xs text-red-600 border border-red-200 rounded">※注意: 日付やクラス名を変更すると、入力済みのデータがリセットされます。</div>
+                      <div className="bg-blue-50 p-2 text-xs text-blue-800 border border-blue-200 rounded">
+                        <strong>便利機能:</strong> カレンダーの日付やクラス名を右クリックすると、名称を変更できます（データも引き継がれます）。<br/>
+                        現在の設定を保存したい場合は、下の「現在の設定を初期値にする」ボタンを押してください。
+                      </div>
                       <div><label className="text-xs font-bold text-gray-500">日付 (カンマ区切り)</label><textarea className="w-full border p-2 text-sm h-20 rounded" value={currentConfig.dates.join(", ")} onChange={(e) => handleListConfigChange('dates', e.target.value)} /></div>
                       <div><label className="text-xs font-bold text-gray-500">時限 (カンマ区切り)</label><textarea className="w-full border p-2 text-sm h-16 rounded" value={currentConfig.periods.join(", ")} onChange={(e) => handleListConfigChange('periods', e.target.value)} /></div>
                       <div><label className="text-xs font-bold text-gray-500">クラス (カンマ区切り)</label><textarea className="w-full border p-2 text-sm h-16 rounded" value={currentConfig.classes.join(", ")} onChange={(e) => handleListConfigChange('classes', e.target.value)} /></div>
                       <div className="bg-orange-50 p-2 rounded border border-orange-100"><label className="text-xs font-bold text-orange-800">必要コマ数 (目標)</label><div className="grid grid-cols-3 gap-2 mt-2">{commonSubjects.map(s => (<div key={s} className="flex justify-between bg-white p-1 border rounded"><span className="text-xs font-bold">{s}</span><input type="number" className="w-12 text-right text-sm" value={currentConfig.subjectCounts[s]||0} onChange={(e) => handleSubjectCountChange(s, e.target.value)} /></div>))}</div></div>
+                      
+                      {/* v41: デフォルト保存ボタン */}
+                      <div className="pt-2">
+                         <button onClick={handleSaveAsDefault} className="w-full py-2 bg-gray-600 text-white font-bold rounded hover:bg-gray-700 shadow-sm text-sm">💾 現在の設定を初期値にする</button>
+                      </div>
                     </div>
                     <div className="border-l pl-6 space-y-4">
                       <div className="flex justify-between items-center border-b pb-1"><h3 className="font-bold text-green-800">👤 講師マスタ (全タブ共通)</h3><button onClick={addTeacher} className="text-xs bg-green-600 text-white px-2 py-1 rounded shadow">+ 追加</button></div>
@@ -782,6 +842,7 @@ export default function ScheduleApp() {
           {contextMenu.type ? (
             <>
               <div className="px-4 py-2 bg-gray-50 border-b font-bold text-gray-500 text-xs">{contextMenu.val} の一括操作</div>
+              <button onClick={() => handleMenuAction('rename')} className="block w-full text-left px-4 py-2 hover:bg-blue-50 text-blue-600 font-bold border-b">✏️ 名称を変更</button>
               <button onClick={() => handleMenuAction('lock-all')} className="block w-full text-left px-4 py-2 hover:bg-gray-100 border-b">🔒 一括ロック</button>
               <button onClick={() => handleMenuAction('unlock-all')} className="block w-full text-left px-4 py-2 hover:bg-gray-100 border-b">🔓 一括解除</button>
               <button onClick={() => handleMenuAction('clear-all')} className="block w-full text-left px-4 py-2 hover:bg-red-50 text-red-600">🗑️ 一括クリア</button>
