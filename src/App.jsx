@@ -5,11 +5,8 @@ const INITIAL_CONFIG = {
   dates: ["12/25(木)", "12/26(金)", "12/27(土)", "12/28(日)"],
   periods: ["1限 (13:00~)", "2限 (14:10~)", "3限 (15:20~)"],
   classes: ["Sクラス", "Aクラス", "Bクラス", "Cクラス"],
-  // 科目リスト（単純な文字配列）
   subjects: ["英語", "数学", "国語", "理科", "社会"],
-  // 科目ごとのコマ数設定 (初期値)
   subjectCounts: { "英語": 10, "数学": 10, "国語": 8, "理科": 6, "社会": 6 },
-  
   teachers: [
     { name: "堀上", subjects: ["英語"], ngSlots: [] },
     { name: "片岡", subjects: ["数学"], ngSlots: [] },
@@ -20,7 +17,7 @@ const INITIAL_CONFIG = {
   ]
 };
 
-// 丸数字変換用ユーティリティ
+// 丸数字変換
 const toCircleNum = (num) => {
   const circles = ["0", "①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨", "⑩", "⑪", "⑫", "⑬", "⑭", "⑮", "⑯", "⑰", "⑱", "⑲", "⑳"];
   return circles[num] || `(${num})`;
@@ -31,21 +28,20 @@ export default function ScheduleApp() {
   const [config, setConfig] = useState(INITIAL_CONFIG);
   const [showConfig, setShowConfig] = useState(false);
   const [editingNgIndex, setEditingNgIndex] = useState(null);
+  
+  // 自動生成の結果候補リスト
+  const [generatedPatterns, setGeneratedPatterns] = useState([]);
+  const [isGenerating, setIsGenerating] = useState(false);
+
   const fileInputRef = useRef(null);
 
-  // --- 操作関数 ---
+  // --- 基本操作関数 ---
   const handleAssign = (date, period, className, type, value) => {
     const key = `${date}-${period}-${className}`;
     if (type === 'subject') {
-      setSchedule(prev => ({
-        ...prev,
-        [key]: { subject: value, teacher: "" }
-      }));
+      setSchedule(prev => ({ ...prev, [key]: { subject: value, teacher: "" } }));
     } else {
-      setSchedule(prev => ({
-        ...prev,
-        [key]: { ...prev[key], [type]: value }
-      }));
+      setSchedule(prev => ({ ...prev, [key]: { ...prev[key], [type]: value } }));
     }
   };
 
@@ -54,7 +50,6 @@ export default function ScheduleApp() {
     setConfig(prev => ({ ...prev, [key]: newArray }));
   };
 
-  // 科目のコマ数設定を変更
   const handleSubjectCountChange = (subject, count) => {
     setConfig(prev => ({
       ...prev,
@@ -62,14 +57,10 @@ export default function ScheduleApp() {
     }));
   };
 
-  // --- 講師情報の操作 (v4と同じ) ---
   const addTeacher = () => {
     const name = prompt("新しい講師の名前を入力してください:");
     if (name) {
-      setConfig(prev => ({
-        ...prev,
-        teachers: [...prev.teachers, { name, subjects: [], ngSlots: [] }]
-      }));
+      setConfig(prev => ({ ...prev, teachers: [...prev.teachers, { name, subjects: [], ngSlots: [] }] }));
     }
   };
 
@@ -97,22 +88,17 @@ export default function ScheduleApp() {
 
   const removeTeacher = (index) => {
     if (window.confirm("この講師を削除しますか？")) {
-      setConfig(prev => ({
-        ...prev,
-        teachers: prev.teachers.filter((_, i) => i !== index)
-      }));
+      setConfig(prev => ({ ...prev, teachers: prev.teachers.filter((_, i) => i !== index) }));
       if (editingNgIndex === index) setEditingNgIndex(null);
     }
   };
 
-  // --- データ分析ロジック (自動計算の肝) ---
-  const analysis = useMemo(() => {
+  // --- 分析ロジック (制約チェック用) ---
+  const analyzeSchedule = (currentSchedule) => {
     const conflictMap = {}; 
-    const subjectOrders = {}; // { "Sクラス-英語-12/25-1限": 1, ... }
-    const dailySubjectMap = {}; // { "Sクラス-12/25-英語": true }
+    const subjectOrders = {};
+    const dailySubjectMap = {};
 
-    // 全コマを走査して分析データを構築
-    // 日付順・時限順に並べるためのキーリスト作成
     const sortedKeys = [];
     config.dates.forEach(date => {
       config.periods.forEach(period => {
@@ -122,31 +108,24 @@ export default function ScheduleApp() {
       });
     });
 
-    // クラスごとに科目の回数をカウント
     config.classes.forEach(cls => {
-      const counts = {}; // { 英語: 0, 数学: 0 }
-      
+      const counts = {};
       sortedKeys.filter(k => k.cls === cls).forEach(({ date, period, key }) => {
-        const entry = schedule[key];
+        const entry = currentSchedule[key];
         if (!entry || !entry.subject) return;
-
-        // 1. 科目カウント (何回目か)
         counts[entry.subject] = (counts[entry.subject] || 0) + 1;
         subjectOrders[key] = counts[entry.subject];
-
-        // 2. 1日2回チェック用マップ作成
         const dailyKey = `${cls}-${date}-${entry.subject}`;
         dailySubjectMap[dailyKey] = (dailySubjectMap[dailyKey] || 0) + 1;
       });
     });
 
-    // 講師重複チェック (v4と同じ)
     config.dates.forEach(date => {
       config.periods.forEach(period => {
         const teacherCounts = {};
         config.classes.forEach(cls => {
           const key = `${date}-${period}-${cls}`;
-          const teacher = schedule[key]?.teacher;
+          const teacher = currentSchedule[key]?.teacher;
           if (teacher && teacher !== "未定") {
              teacherCounts[teacher] = (teacherCounts[teacher] || 0) + 1;
           }
@@ -158,16 +137,141 @@ export default function ScheduleApp() {
     });
 
     return { conflictMap, subjectOrders, dailySubjectMap };
-  }, [schedule, config]);
+  };
+
+  const analysis = useMemo(() => analyzeSchedule(schedule), [schedule, config]);
+
+  // --- ★自動生成ロジック (バックトラッキング法) ---
+  const generateSchedule = () => {
+    setIsGenerating(true);
+    // 画面描画をブロックしないように少し待つ
+    setTimeout(() => {
+      const solutions = [];
+      const slots = [];
+      
+      // 1. 空いているスロットを特定
+      config.dates.forEach(date => {
+        config.periods.forEach(period => {
+          config.classes.forEach(cls => {
+            const key = `${date}-${period}-${cls}`;
+            // 既に埋まっているマスはスキップ
+            if (!schedule[key] || !schedule[key].subject || !schedule[key].teacher) {
+              slots.push({ key, date, period, cls });
+            }
+          });
+        });
+      });
+
+      // 現在の科目カウント状況を把握
+      const currentCounts = {};
+      config.classes.forEach(cls => {
+        currentCounts[cls] = {};
+        config.subjects.forEach(s => currentCounts[cls][s] = 0);
+      });
+      // 既存のスケジュールからカウント
+      Object.keys(schedule).forEach(k => {
+        const entry = schedule[k];
+        if (entry && entry.subject) {
+          const [d, p, c] = k.split('-');
+          // キー分解が単純でないため、scheduleのキー構造に依存。
+          // 正確にはキーにクラスが含まれるのでそれを利用。
+          const cls = config.classes.find(cl => k.includes(cl)); 
+          if(cls) currentCounts[cls][entry.subject] = (currentCounts[cls][entry.subject] || 0) + 1;
+        }
+      });
+
+      // 再帰関数による探索
+      const solve = (index, tempSchedule, tempCounts) => {
+        // パターンが3つ見つかったら終了
+        if (solutions.length >= 3) return;
+
+        // すべてのスロットが埋まったら成功
+        if (index >= slots.length) {
+          solutions.push(JSON.parse(JSON.stringify(tempSchedule)));
+          return;
+        }
+
+        const slot = slots[index];
+        const { date, period, cls, key } = slot;
+
+        // 科目を試す（ランダムな順序にすると毎回違う結果が出る）
+        const shuffledSubjects = [...config.subjects].sort(() => Math.random() - 0.5);
+
+        for (const subject of shuffledSubjects) {
+          // 制約1: コマ数制限
+          const maxCount = config.subjectCounts[subject] || 0;
+          if ((tempCounts[cls][subject] || 0) >= maxCount) continue;
+
+          // 制約2: 1日1回制限
+          // 現在の仮スケジュールを見て、同日同クラスに同じ科目がないかチェック
+          let isDailyDup = false;
+          config.periods.forEach(p => {
+             const checkKey = `${date}-${p}-${cls}`;
+             if (tempSchedule[checkKey]?.subject === subject) isDailyDup = true;
+          });
+          if (isDailyDup) continue;
+
+          // 講師を試す
+          const validTeachers = config.teachers.filter(t => t.subjects.includes(subject));
+          // ランダム順
+          const shuffledTeachers = [...validTeachers].sort(() => Math.random() - 0.5);
+
+          for (const teacherObj of shuffledTeachers) {
+             const teacher = teacherObj.name;
+             
+             // 制約3: NG時間
+             if (teacherObj.ngSlots && teacherObj.ngSlots.includes(`${date}-${period}`)) continue;
+
+             // 制約4: 講師重複 (同日同時限に他のクラスで教えていないか)
+             let isTeacherDup = false;
+             config.classes.forEach(c => {
+               if (c !== cls) {
+                 const otherKey = `${date}-${period}-${c}`;
+                 if (tempSchedule[otherKey]?.teacher === teacher) isTeacherDup = true;
+               }
+             });
+             if (isTeacherDup) continue;
+
+             // すべての制約をクリア！ -> 仮置きして次へ
+             tempSchedule[key] = { subject, teacher };
+             tempCounts[cls][subject] = (tempCounts[cls][subject] || 0) + 1;
+
+             solve(index + 1, tempSchedule, tempCounts);
+
+             if (solutions.length >= 3) return;
+
+             // バックトラック (戻る)
+             delete tempSchedule[key];
+             tempCounts[cls][subject] -= 1;
+          }
+        }
+      };
+
+      // 探索開始 (ディープコピーしたオブジェクトを渡す)
+      solve(0, JSON.parse(JSON.stringify(schedule)), JSON.parse(JSON.stringify(currentCounts)));
+
+      setGeneratedPatterns(solutions);
+      setIsGenerating(false);
+      if (solutions.length === 0) {
+        alert("条件を満たすパターンが見つかりませんでした。\n条件を緩和するか、手動で一部を埋めてから再試行してください。");
+      }
+    }, 100);
+  };
+
+  const applyPattern = (pattern) => {
+    setSchedule(pattern);
+    setGeneratedPatterns([]);
+    alert("適用しました！");
+  };
 
   // --- 保存・読込 ---
   const handleSaveJson = () => {
-    const saveData = { version: 5, config, schedule };
+    const saveData = { version: 6, config, schedule };
     const blob = new Blob([JSON.stringify(saveData, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `schedule_v5_${new Date().toISOString().slice(0,10)}.json`;
+    link.download = `schedule_v6_${new Date().toISOString().slice(0,10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -180,17 +284,11 @@ export default function ScheduleApp() {
       try {
         const data = JSON.parse(e.target.result);
         if (data.config && data.schedule) {
-          // subjectCountsがない古いデータのための補正
-          const patchedConfig = { 
-            ...data.config, 
-            subjectCounts: data.config.subjectCounts || INITIAL_CONFIG.subjectCounts 
-          };
+          const patchedConfig = { ...data.config, subjectCounts: data.config.subjectCounts || INITIAL_CONFIG.subjectCounts };
           const patchedTeachers = patchedConfig.teachers.map(t => ({...t, ngSlots: t.ngSlots || []}));
           setConfig({ ...patchedConfig, teachers: patchedTeachers });
           setSchedule(data.schedule);
-        } else {
-          alert("データ形式エラー");
-        }
+        } else { alert("データ形式エラー"); }
       } catch (error) { alert("読込エラー"); }
     };
     reader.readAsText(file);
@@ -201,16 +299,39 @@ export default function ScheduleApp() {
     <div className="p-4 bg-gray-50 min-h-screen font-sans">
       <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">冬期講習 時間割エディタ v5</h1>
-          <p className="text-sm text-gray-600">自動カウント＆1日1回制限</p>
+          <h1 className="text-2xl font-bold text-gray-800">冬期講習 時間割エディタ v6</h1>
+          <p className="text-sm text-gray-600">自動生成機能搭載</p>
         </div>
         <div className="flex gap-2">
            <button onClick={() => setShowConfig(!showConfig)} className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 shadow flex items-center gap-2">⚙️ 設定</button>
+           <button onClick={generateSchedule} disabled={isGenerating} className={`px-4 py-2 text-white rounded shadow flex items-center gap-2 ${isGenerating ? "bg-purple-400 cursor-wait" : "bg-purple-600 hover:bg-purple-700"}`}>
+             {isGenerating ? "計算中..." : "🧙‍♂️ 自動作成"}
+           </button>
           <button onClick={() => fileInputRef.current.click()} className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 shadow">📂 開く</button>
           <input type="file" accept=".json" ref={fileInputRef} onChange={handleLoadJson} className="hidden" />
           <button onClick={handleSaveJson} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 shadow">💾 保存</button>
         </div>
       </div>
+
+      {/* 自動生成結果の選択モーダル */}
+      {generatedPatterns.length > 0 && (
+        <div className="mb-6 p-4 bg-purple-50 border-2 border-purple-200 rounded-lg animate-fade-in">
+          <h2 className="font-bold text-lg text-purple-900 mb-2">✨ 生成結果 (クリックして適用)</h2>
+          <div className="flex gap-4 overflow-x-auto pb-2">
+            {generatedPatterns.map((pattern, idx) => (
+              <button 
+                key={idx}
+                onClick={() => applyPattern(pattern)}
+                className="min-w-[120px] p-4 bg-white border border-purple-300 rounded hover:bg-purple-100 shadow transition"
+              >
+                <div className="font-bold text-lg mb-1">案 {idx + 1}</div>
+                <div className="text-xs text-gray-500">条件クリア済み</div>
+              </button>
+            ))}
+            <button onClick={() => setGeneratedPatterns([])} className="min-w-[80px] p-4 text-gray-500 hover:text-gray-700">キャンセル</button>
+          </div>
+        </div>
+      )}
 
       {/* 設定エリア */}
       {showConfig && (
@@ -224,31 +345,22 @@ export default function ScheduleApp() {
               <div><label className="block text-xs font-bold text-gray-500 mb-1">クラス (カンマ区切り)</label><textarea className="w-full border p-2 rounded text-sm h-12" value={config.classes.join(", ")} onChange={(e) => handleListConfigChange('classes', e.target.value)} /></div>
               
               <div className="border p-2 rounded bg-yellow-50">
-                <label className="block text-xs font-bold text-gray-700 mb-2">📚 科目ごとの必要コマ数設定</label>
+                <label className="block text-xs font-bold text-gray-700 mb-2">📚 科目ごとの必要コマ数</label>
                 <div className="grid grid-cols-2 gap-2">
                   {config.subjects.map(subj => (
                     <div key={subj} className="flex items-center justify-between bg-white p-1 rounded border">
                       <span className="text-xs font-bold">{subj}</span>
-                      <input 
-                        type="number" 
-                        className="w-12 text-right border rounded px-1 text-sm"
-                        value={config.subjectCounts?.[subj] || 0}
-                        onChange={(e) => handleSubjectCountChange(subj, e.target.value)}
-                      />
+                      <input type="number" className="w-12 text-right border rounded px-1 text-sm" value={config.subjectCounts?.[subj] || 0} onChange={(e) => handleSubjectCountChange(subj, e.target.value)} />
                     </div>
                   ))}
                 </div>
-                {/* 科目リスト編集用 */}
-                 <div className="mt-2">
-                    <label className="block text-xs text-gray-500">科目リスト編集 (カンマ区切り)</label>
-                    <textarea className="w-full border p-1 rounded text-xs h-8" value={config.subjects.join(", ")} onChange={(e) => handleListConfigChange('subjects', e.target.value)} />
-                 </div>
+                 <div className="mt-2"><label className="block text-xs text-gray-500">科目リスト編集</label><textarea className="w-full border p-1 rounded text-xs h-8" value={config.subjects.join(", ")} onChange={(e) => handleListConfigChange('subjects', e.target.value)} /></div>
               </div>
             </div>
 
             <div className="md:col-span-2 border-l pl-4">
               <div className="flex justify-between items-center mb-2">
-                <label className="block text-sm font-bold text-gray-700">👤 講師設定 (担当科目 & NG時間)</label>
+                <label className="block text-sm font-bold text-gray-700">👤 講師設定</label>
                 <button onClick={addTeacher} className="text-xs bg-blue-500 text-white px-2 py-1 rounded hover:bg-blue-600">+ 講師追加</button>
               </div>
               <div className="overflow-y-auto max-h-[400px] border rounded bg-gray-50 p-2 mb-4">
@@ -260,24 +372,8 @@ export default function ScheduleApp() {
                     {config.teachers.map((teacher, tIndex) => (
                       <tr key={tIndex} className={`border-b ${editingNgIndex === tIndex ? "bg-blue-50" : "bg-white"}`}>
                         <td className="p-2 font-bold">{teacher.name}</td>
-                        <td className="p-2">
-                          <div className="flex flex-wrap gap-2">
-                            {config.subjects.map(subject => (
-                              <label key={subject} className="flex items-center gap-1 cursor-pointer hover:bg-gray-100 p-1 rounded">
-                                <input type="checkbox" checked={teacher.subjects.includes(subject)} onChange={() => toggleTeacherSubject(tIndex, subject)} />
-                                <span className="text-xs">{subject}</span>
-                              </label>
-                            ))}
-                          </div>
-                        </td>
-                        <td className="p-2 text-center">
-                          <button 
-                            onClick={() => setEditingNgIndex(editingNgIndex === tIndex ? null : tIndex)}
-                            className={`text-xs px-2 py-1 rounded border ${editingNgIndex === tIndex ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-300 hover:bg-gray-100"}`}
-                          >
-                            {editingNgIndex === tIndex ? "設定中" : "NG設定"}
-                          </button>
-                        </td>
+                        <td className="p-2"><div className="flex flex-wrap gap-2">{config.subjects.map(subject => (<label key={subject} className="flex items-center gap-1 cursor-pointer hover:bg-gray-100 p-1 rounded"><input type="checkbox" checked={teacher.subjects.includes(subject)} onChange={() => toggleTeacherSubject(tIndex, subject)} /><span className="text-xs">{subject}</span></label>))}</div></td>
+                        <td className="p-2 text-center"><button onClick={() => setEditingNgIndex(editingNgIndex === tIndex ? null : tIndex)} className={`text-xs px-2 py-1 rounded border ${editingNgIndex === tIndex ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-300 hover:bg-gray-100"}`}>{editingNgIndex === tIndex ? "設定中" : "NG設定"}</button></td>
                         <td className="p-2 text-center"><button onClick={() => removeTeacher(tIndex)} className="text-red-500 hover:text-red-700">×</button></td>
                       </tr>
                     ))}
@@ -313,7 +409,6 @@ export default function ScheduleApp() {
         </div>
       )}
       
-      {/* 時間割テーブル */}
       <div className="overflow-x-auto shadow-lg rounded-lg">
         <table className="border-collapse w-full bg-white text-sm text-left">
           <thead>
@@ -336,21 +431,14 @@ export default function ScheduleApp() {
                     const currentSubject = currentData.subject || "";
                     const currentTeacher = currentData.teacher || "";
                     const isTeacherConflict = currentTeacher && analysis.conflictMap[`${date}-${period}-${currentTeacher}`];
-
-                    // 自動ナンバリング取得 (例: 1)
                     const order = analysis.subjectOrders[key] || 0;
                     const maxCount = config.subjectCounts?.[currentSubject] || 0;
                     const isCountOver = maxCount > 0 && order > maxCount;
-
-                    const filteredTeachers = currentSubject 
-                      ? config.teachers.filter(t => t.subjects.includes(currentSubject))
-                      : config.teachers;
+                    const filteredTeachers = currentSubject ? config.teachers.filter(t => t.subjects.includes(currentSubject)) : config.teachers;
 
                     return (
                       <td key={cls} className={`p-2 border-r last:border-0 ${isTeacherConflict ? "bg-red-50" : ""}`}>
                         <div className={`flex flex-col gap-2 p-2 rounded ${isTeacherConflict ? "border-2 border-red-400" : "border border-gray-200"}`}>
-                          
-                          {/* 科目選択 */}
                           <div className="relative">
                             <select 
                               className={`w-full font-medium focus:outline-none cursor-pointer appearance-none ${isCountOver ? "text-red-600 font-bold" : "text-gray-700"} bg-transparent`}
@@ -359,29 +447,15 @@ export default function ScheduleApp() {
                             >
                               <option value="" className="text-gray-400">- 科目 -</option>
                               {config.subjects.map(s => {
-                                // 1日2回チェック: すでにこのクラス・この日に使われていて、かつ「自分自身」ではない場合
                                 const isUsedToday = analysis.dailySubjectMap[`${cls}-${date}-${s}`] > 0;
                                 const isSelf = currentSubject === s; 
-                                // 自分自身がすでに選択されているなら、それは「1回」とカウントされるのでOK。
-                                // 他のコマですでに使われている(isUsedToday)なら、自分(isSelf)でない限りNG
                                 const isDailyDup = isUsedToday && !isSelf;
-
-                                return (
-                                  <option key={s} value={s} disabled={isDailyDup} className={isDailyDup ? "bg-gray-200 text-gray-400" : ""}>
-                                    {s} {isDailyDup ? "(1日1回済)" : ""}
-                                  </option>
-                                );
+                                return <option key={s} value={s} disabled={isDailyDup} className={isDailyDup ? "bg-gray-200 text-gray-400" : ""}>{s} {isDailyDup ? "(1日1回済)" : ""}</option>;
                               })}
                             </select>
-                            {/* ナンバリング表示バッジ */}
-                            {currentSubject && (
-                              <div className={`absolute right-0 top-0 text-xs px-1 rounded pointer-events-none ${isCountOver ? "bg-red-500 text-white" : "bg-blue-100 text-blue-800"}`}>
-                                {toCircleNum(order)} {isCountOver && "⚠"}
-                              </div>
-                            )}
+                            {currentSubject && <div className={`absolute right-0 top-0 text-xs px-1 rounded pointer-events-none ${isCountOver ? "bg-red-500 text-white" : "bg-blue-100 text-blue-800"}`}>{toCircleNum(order)} {isCountOver && "⚠"}</div>}
                           </div>
                           
-                          {/* 講師選択 */}
                           <select 
                             className={`w-full p-1 rounded font-bold cursor-pointer ${isTeacherConflict ? "text-red-600 bg-red-100" : "text-blue-900 bg-blue-50"} ${!currentSubject ? "opacity-50" : ""}`}
                             onChange={(e) => handleAssign(date, period, cls, 'teacher', e.target.value)}
@@ -394,9 +468,7 @@ export default function ScheduleApp() {
                               return <option key={t.name} value={t.name} disabled={isNg} className={isNg ? "text-gray-300 bg-gray-100" : ""}>{t.name} {isNg ? "(NG)" : ""}</option>;
                             })}
                           </select>
-                          
                           {isTeacherConflict && <div className="text-xs text-red-600 font-bold text-center bg-red-100 rounded">⚠️ 重複</div>}
-                          {isCountOver && <div className="text-xs text-red-600 font-bold text-center">回数超過 ({order}/{maxCount})</div>}
                         </div>
                       </td>
                     );
