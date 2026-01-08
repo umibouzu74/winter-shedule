@@ -29,7 +29,6 @@ const INITIAL_CONFIG = {
     { name: "野口", subjects: ["社会"], ngSlots: [], ngClasses: [] },
     { name: "未定", subjects: ["英語", "数学", "国語", "理科", "社会"], ngSlots: [], ngClasses: [] }
   ],
-  // ★ v26: 他学年・午前等のコマ数管理 { "12/25-堀上": 3 }
   externalCounts: {}
 };
 
@@ -56,7 +55,6 @@ export default function ScheduleApp() {
   });
   const [config, setConfig] = useState(() => {
     const saved = localStorage.getItem(STORAGE_KEY_CONFIG);
-    // v26: 既存データにexternalCountsがない場合の補正
     const parsed = saved ? JSON.parse(saved) : INITIAL_CONFIG;
     if (!parsed.externalCounts) parsed.externalCounts = {};
     return parsed;
@@ -69,7 +67,6 @@ export default function ScheduleApp() {
   const [showSummary, setShowSummary] = useState(false);
   const [editingNgIndex, setEditingNgIndex] = useState(null);
   
-  // ★ v26: 外部負荷編集モード
   const [showExternalLoad, setShowExternalLoad] = useState(false);
 
   const [generatedPatterns, setGeneratedPatterns] = useState([]);
@@ -217,17 +214,10 @@ export default function ScheduleApp() {
     setContextMenu(null);
   };
 
-  // ★ v26: 外部負荷カウントの保存
   const handleExternalCountChange = (date, teacherName, value) => {
     const key = `${date}-${teacherName}`;
     const count = parseInt(value) || 0;
-    setConfig(prev => ({
-      ...prev,
-      externalCounts: {
-        ...prev.externalCounts,
-        [key]: count
-      }
-    }));
+    setConfig(prev => ({ ...prev, externalCounts: { ...prev.externalCounts, [key]: count } }));
   };
 
   const handleAssign = (date, period, className, type, value) => {
@@ -276,15 +266,13 @@ export default function ScheduleApp() {
   const toggleTeacherNg = (i, d, pd) => setConfig(p => { const t = [...p.teachers]; const k=`${d}-${pd}`; if (!t[i].ngSlots) t[i].ngSlots=[]; if(t[i].ngSlots.includes(k)) t[i].ngSlots=t[i].ngSlots.filter(v=>v!==k); else t[i].ngSlots.push(k); return { ...p, teachers: t }; });
   const removeTeacher = (i) => { if(window.confirm("削除しますか？")) setConfig(p => ({ ...p, teachers: p.teachers.filter((_, idx) => idx !== i) })); };
 
-  // 分析ロジック (v26: 外部負荷考慮)
+  // 分析
   const analysis = useMemo(() => {
     const conflictMap = {}; const subjectOrders = {}; const dailySubjectMap = {};
-    const teacherDailyCounts = {}; // { "12/25-堀上": { current: 2, external: 3, total: 5 } }
+    const teacherDailyCounts = {};
     const errorKeys = [];
     const sortedKeys = [];
-    
     config.dates.forEach(d => config.periods.forEach(p => config.classes.forEach(c => sortedKeys.push({ d, p, c, key: `${d}-${p}-${c}` }))));
-    
     config.classes.forEach(c => {
       const counts = {};
       sortedKeys.filter(k => k.c === c).forEach(({ d, p, key }) => {
@@ -296,21 +284,17 @@ export default function ScheduleApp() {
         dailySubjectMap[dk] = (dailySubjectMap[dk] || 0) + 1;
       });
     });
-
     config.dates.forEach(d => {
-      // 1. 外部負荷を初期値としてセット
       config.teachers.forEach(t => {
         const ext = config.externalCounts?.[`${d}-${t.name}`] || 0;
         teacherDailyCounts[`${d}-${t.name}`] = { current: 0, external: ext, total: ext };
       });
-
       config.periods.forEach(p => {
         const tc = {};
         config.classes.forEach(c => { 
           const t = schedule[`${d}-${p}-${c}`]?.teacher; 
           if (t && t !== "未定") {
             tc[t] = (tc[t] || 0) + 1; 
-            // 日次カウント加算
             const dayKey = `${d}-${t}`;
             if(!teacherDailyCounts[dayKey]) teacherDailyCounts[dayKey] = { current: 0, external: 0, total: 0 };
             teacherDailyCounts[dayKey].current += 1;
@@ -350,17 +334,9 @@ export default function ScheduleApp() {
   const SummaryTable = ({ targetSchedule }) => {
     const summary = {};
     config.classes.forEach(cls => { summary[cls] = {}; config.subjects.forEach(subj => summary[cls][subj] = {}); });
-    const teacherTotals = {}; // { "堀上": { current: 10, external: 5 } }
+    const teacherTotals = {};
     config.teachers.forEach(t => teacherTotals[t.name] = { current: 0, external: 0 });
-
-    // 外部負荷集計
-    config.dates.forEach(d => {
-      config.teachers.forEach(t => {
-        const ext = config.externalCounts?.[`${d}-${t.name}`] || 0;
-        teacherTotals[t.name].external += ext;
-      });
-    });
-
+    config.dates.forEach(d => { config.teachers.forEach(t => { const ext = config.externalCounts?.[`${d}-${t.name}`] || 0; teacherTotals[t.name].external += ext; }); });
     Object.keys(targetSchedule).forEach(key => {
       const entry = targetSchedule[key];
       if (entry && entry.subject && entry.teacher) {
@@ -371,11 +347,7 @@ export default function ScheduleApp() {
         }
       }
     });
-
-    const sortedTeachers = Object.entries(teacherTotals)
-      .filter(([_, val]) => (val.current + val.external) > 0)
-      .sort((a, b) => (b[1].current + b[1].external) - (a[1].current + a[1].external));
-    
+    const sortedTeachers = Object.entries(teacherTotals).filter(([_, val]) => (val.current + val.external) > 0).sort((a, b) => (b[1].current + b[1].external) - (a[1].current + a[1].external));
     const maxCount = sortedTeachers.length > 0 ? (sortedTeachers[0][1].current + sortedTeachers[0][1].external) : 1;
 
     return (
@@ -391,14 +363,10 @@ export default function ScheduleApp() {
                 <div key={name} className={`flex items-center text-sm cursor-pointer p-1 rounded hover:bg-gray-100 ${highlightTeacher === name ? "bg-yellow-100 ring-2 ring-yellow-400" : ""}`} onClick={() => setHighlightTeacher(highlightTeacher === name ? null : name)}>
                   <div className="w-20 font-bold text-gray-700 text-right pr-2 truncate">{name}</div>
                   <div className="flex-1 bg-gray-100 rounded-full h-4 overflow-hidden flex">
-                    {/* 外部負荷 (グレー) */}
                     <div className="h-full bg-gray-400" style={{ width: `${(counts.external / maxCount) * 100}%` }}></div>
-                    {/* 今回分 (青) */}
                     <div className={`h-full ${name === "未定" ? "bg-red-400" : "bg-blue-500"}`} style={{ width: `${(counts.current / maxCount) * 100}%` }}></div>
                   </div>
-                  <div className="w-16 pl-2 font-bold text-gray-600 text-xs">
-                    計{total} <span className="text-gray-400">({counts.external}+{counts.current})</span>
-                  </div>
+                  <div className="w-16 pl-2 font-bold text-gray-600 text-xs">計{total} <span className="text-gray-400">({counts.external}+{counts.current})</span></div>
                 </div>
               );
             })}
@@ -425,13 +393,11 @@ export default function ScheduleApp() {
     );
   };
 
-  const generateSchedule = () => { /* 省略せず記述 (v26: 自動生成にも外部負荷考慮を追加) */
+  const generateSchedule = () => { 
     setIsGenerating(true);
     setTimeout(() => {
       const solutions = []; const slots = [];
-      config.dates.forEach(d => config.periods.forEach(p => config.classes.forEach(c => {
-        const k = `${d}-${p}-${c}`; if (!schedule[k] || !schedule[k].subject) slots.push({ d, p, c, k });
-      })));
+      config.dates.forEach(d => config.periods.forEach(p => config.classes.forEach(c => { const k = `${d}-${p}-${c}`; if (!schedule[k] || !schedule[k].subject) slots.push({ d, p, c, k }); })));
       const currentCounts = {};
       config.classes.forEach(c => { currentCounts[c] = {}; config.subjects.forEach(s => currentCounts[c][s] = 0); });
       Object.keys(schedule).forEach(k => { const e = schedule[k]; if (e && e.subject) { const c = config.classes.find(cl => k.includes(cl)); if(c) currentCounts[c][e.subject] = (currentCounts[c][e.subject] || 0) + 1; } });
@@ -441,29 +407,18 @@ export default function ScheduleApp() {
         iter++; if (iter > MAX || solutions.length >= 3) return;
         if (idx >= slots.length) { solutions.push(JSON.parse(JSON.stringify(tempSch))); return; }
         const { d, p, c, k } = slots[idx];
-        const sortedSubj = [...config.subjects].sort((a, b) => {
-          const remA = (config.subjectCounts[a]||0) - (tempCnt[c][a]||0);
-          const remB = (config.subjectCounts[b]||0) - (tempCnt[c][b]||0);
-          return remB - remA;
-        });
+        const sortedSubj = [...config.subjects].sort((a, b) => { const remA = (config.subjectCounts[a]||0) - (tempCnt[c][a]||0); const remB = (config.subjectCounts[b]||0) - (tempCnt[c][b]||0); return remB - remA; });
         for (const s of sortedSubj) {
           if (iter > MAX) return;
           if ((tempCnt[c][s]||0) >= (config.subjectCounts[s]||0)) continue;
           if (config.periods.some(per => tempSch[`${d}-${per}-${c}`]?.subject === s)) continue;
-          
           const validTeachers = config.teachers.filter(t => t.subjects.includes(s) && !t.ngClasses?.includes(c) && !t.ngSlots?.includes(`${d}-${p}`));
-          // ★ v26: 1日4コマ制限（外部負荷含む）
           const availableTeachers = validTeachers.filter(t => {
              const ext = config.externalCounts?.[`${d}-${t.name}`] || 0;
              let dayCount = 0;
-             config.periods.forEach(per => {
-               config.classes.forEach(cl => {
-                 if (tempSch[`${d}-${per}-${cl}`]?.teacher === t.name) dayCount++;
-               });
-             });
-             return (ext + dayCount) < 4; // 仮: 1日4コマまで
+             config.periods.forEach(per => { config.classes.forEach(cl => { if (tempSch[`${d}-${per}-${cl}`]?.teacher === t.name) dayCount++; }); });
+             return (ext + dayCount) < 4; 
           });
-
           const shuffled = [...availableTeachers].sort(() => Math.random() - 0.5);
           for (const tObj of shuffled) {
             const tName = tObj.name;
@@ -480,30 +435,21 @@ export default function ScheduleApp() {
     }, 100);
   };
 
-  const handleDownloadExcel = () => { /* Excelロジック (v26: 集計に外部負荷含める) */
+  const handleDownloadExcel = () => { 
     const headerRow = ["日付", "時限", ...config.classes]; const dataRows = [];
-    config.dates.forEach(d => config.periods.forEach(p => {
-      const row = [d, p]; config.classes.forEach(c => { const e = schedule[`${d}-${p}-${c}`]; row.push(e && e.subject ? `${e.subject}\n${e.teacher}` : ""); }); dataRows.push(row);
-    }));
+    config.dates.forEach(d => config.periods.forEach(p => { const row = [d, p]; config.classes.forEach(c => { const e = schedule[`${d}-${p}-${c}`]; row.push(e && e.subject ? `${e.subject}\n${e.teacher}` : ""); }); dataRows.push(row); }));
     const wb = XLSX.utils.book_new();
     const ws1 = XLSX.utils.aoa_to_sheet([headerRow, ...dataRows]);
     ws1['!cols'] = [{ wch: 15 }, { wch: 15 }, ...config.classes.map(() => ({ wch: 20 }))];
     XLSX.utils.book_append_sheet(wb, ws1, "時間割");
-
-    const tTotals = {}; 
-    config.teachers.forEach(t => tTotals[t.name] = (config.externalCounts?.[t.name] || 0)); // このロジックは修正必要だが簡易版として
-    // 正確には日付ごとの合計が必要なので、Excel出力時は「今回のコマ数」だけ出すのが一般的かも。
-    // ここでは「今回分」を出力します。
-    const currentTotals = {};
-    Object.values(schedule).forEach(e => { if(e.teacher) currentTotals[e.teacher] = (currentTotals[e.teacher]||0)+1; });
+    const currentTotals = {}; Object.values(schedule).forEach(e => { if(e.teacher) currentTotals[e.teacher] = (currentTotals[e.teacher]||0)+1; });
     const ws2 = XLSX.utils.aoa_to_sheet([["講師名", "今回担当コマ数"], ...Object.entries(currentTotals).sort((a,b)=>b[1]-a[1])]);
     XLSX.utils.book_append_sheet(wb, ws2, "講師別集計");
-
     const pRows = []; config.teachers.forEach(t => { if (t.name === "未定") return; const slots = []; config.dates.forEach(d => config.periods.forEach(p => config.classes.forEach(c => { if (schedule[`${d}-${p}-${c}`]?.teacher === t.name) slots.push([d, p, c, schedule[`${d}-${p}-${c}`].subject]); }))); if (slots.length) pRows.push([`■ ${t.name}`], ["日付", "時限", "クラス", "科目"], ...slots, [], []); });
     if (pRows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(pRows), "個人別");
     XLSX.writeFile(wb, `時間割_${new Date().toISOString().slice(0,10)}.xlsx`);
   };
-  const handleSaveJson = () => { const blob = new Blob([JSON.stringify({ version: 26, config, schedule }, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `schedule_v26.json`; link.click(); };
+  const handleSaveJson = () => { const blob = new Blob([JSON.stringify({ version: 27, config, schedule }, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `schedule_v27.json`; link.click(); };
 
   const printStyle = `
     @media print {
@@ -521,32 +467,41 @@ export default function ScheduleApp() {
     <div className="p-4 bg-gray-50 min-h-screen font-sans" onClick={() => setContextMenu(null)}>
       <style>{printStyle}</style>
 
-      {/* ヘッダー */}
-      <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4 no-print">
-        <div><h1 className="text-2xl font-bold text-gray-800">冬期講習 時間割エディタ v26</h1><p className="text-sm text-gray-600">他学年/午前コマ数管理対応</p></div>
+      {/* ヘッダー・ボタン群 */}
+      <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 gap-4 no-print">
+        <div>
+          {/* ★ v27: タイトル変更 */}
+          <h1 className="text-2xl font-bold text-gray-800">時間割作成くん v27</h1>
+          <p className="text-sm text-gray-600">他学年/午前コマ数管理対応</p>
+        </div>
         
-        <div className="flex items-center gap-4 bg-white p-2 rounded shadow border px-4 flex-1 justify-center max-w-2xl mx-auto">
+        {/* ダッシュボード */}
+        <div className="flex items-center gap-4 bg-white p-2 rounded shadow border px-4 w-full xl:w-auto xl:max-w-2xl justify-center">
            <div className="flex flex-col w-32"><div className="flex justify-between text-xs mb-1 font-bold text-gray-600"><span>進捗: {dashboard.progress}%</span><span>{dashboard.filledCount}/{dashboard.totalRequired}</span></div><div className="h-2 bg-gray-200 rounded overflow-hidden"><div className="h-full bg-green-500 rounded transition-all duration-500" style={{width: `${dashboard.progress}%`}}></div></div></div>
            {analysis.errorKeys.length > 0 ? (
              <button onClick={scrollToFirstError} className="flex items-center gap-1 text-xs bg-red-100 text-red-600 px-3 py-2 rounded-full font-bold hover:bg-red-200 animate-pulse transition-colors border border-red-200">⚠️ 重複 {analysis.errorKeys.length}件</button>
            ) : (<div className="flex items-center gap-1 text-xs bg-green-100 text-green-700 px-3 py-2 rounded-full font-bold border border-green-200">✨ エラーなし</div>)}
         </div>
 
-        <div className="flex items-center gap-2">
+        {/* ボタン群 (★ v27: ラベル復活 & 折り返し対応) */}
+        <div className="flex flex-wrap items-center gap-2">
            <span className="text-xs text-green-600 font-bold mr-2">{saveStatus}</span>
-           <button onClick={() => setIsCompact(!isCompact)} className={`px-3 py-2 rounded shadow border ${isCompact ? "bg-indigo-100 text-indigo-700" : "bg-white text-gray-600"}`} title="表示サイズ切替">{isCompact ? "🔍" : "📏"}</button>
-           <div className="flex bg-white rounded shadow border border-gray-300 mr-2"><button onClick={undo} disabled={historyIndex === 0} className="px-3 py-2 text-gray-600 border-r">↩️</button><button onClick={redo} disabled={historyIndex === history.length - 1} className="px-3 py-2 text-gray-600">↪️</button></div>
-           <button onClick={handleDownloadExcel} className="px-4 py-2 bg-green-700 text-white rounded hover:bg-green-800 shadow">📊 Excel</button>
-           <button onClick={handleClearUnlocked} className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 shadow">🗑️</button>
-           <button onClick={() => setShowSummary(!showSummary)} className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 shadow">📊</button>
-           <button onClick={() => setShowConfig(true)} className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 shadow">⚙️</button>
-           <button onClick={generateSchedule} disabled={isGenerating} className={`px-4 py-2 text-white rounded shadow ${isGenerating ? "bg-purple-400" : "bg-purple-600"}`}>🧙‍♂️</button>
-           <button onClick={handleSaveJson} className="px-4 py-2 bg-blue-600 text-white rounded shadow">💾</button>
-           <button onClick={() => fileInputRef.current.click()} className="px-4 py-2 bg-green-600 text-white rounded shadow">📂</button>
+           <button onClick={() => setIsCompact(!isCompact)} className={`px-3 py-2 rounded shadow border flex items-center gap-1 ${isCompact ? "bg-indigo-100 text-indigo-700 border-indigo-300" : "bg-white text-gray-600 border-gray-300"}`} title="表示サイズ切替">{isCompact ? "🔍 標準" : "📏 縮小"}</button>
+           <div className="flex bg-white rounded shadow border border-gray-300 mr-2"><button onClick={undo} disabled={historyIndex === 0} className="px-3 py-2 text-gray-600 hover:bg-gray-100 disabled:opacity-30 border-r" title="元に戻す">↩️</button><button onClick={redo} disabled={historyIndex === history.length - 1} className="px-3 py-2 text-gray-600 hover:bg-gray-100 disabled:opacity-30" title="やり直し">↪️</button></div>
+           
+           <button onClick={handleDownloadExcel} className="px-3 py-2 bg-green-700 text-white rounded hover:bg-green-800 shadow text-sm flex items-center gap-1">📊 Excel</button>
+           <button onClick={handleClearUnlocked} className="px-3 py-2 bg-red-500 text-white rounded hover:bg-red-600 shadow text-sm flex items-center gap-1">🗑️ 削除</button>
+           <button onClick={() => setShowSummary(!showSummary)} className="px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 shadow text-sm flex items-center gap-1">📊 集計</button>
+           <button onClick={() => setShowConfig(true)} className="px-3 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 shadow text-sm flex items-center gap-1">⚙️ 設定</button>
+           <button onClick={generateSchedule} disabled={isGenerating} className={`px-3 py-2 text-white rounded shadow text-sm flex items-center gap-1 ${isGenerating ? "bg-purple-400 cursor-wait" : "bg-purple-600 hover:bg-purple-700"}`}>🧙‍♂️ 自動作成</button>
+           
+           <button onClick={handleSaveJson} className="px-3 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 shadow text-sm flex items-center gap-1">💾 保存</button>
+           <button onClick={() => fileInputRef.current.click()} className="px-3 py-2 bg-green-600 text-white rounded hover:bg-green-700 shadow text-sm flex items-center gap-1">📂 開く</button>
            <input type="file" accept=".json" ref={fileInputRef} onChange={handleLoadJson} className="hidden" />
         </div>
       </div>
 
+      {/* 以下、コンテンツエリア (変更なし) */}
       {showSummary && <div className="mb-6 animate-fade-in no-print"><SummaryTable targetSchedule={schedule} /></div>}
       {generatedPatterns.length > 0 && (
         <div className="mb-6 p-4 bg-purple-50 border-2 border-purple-200 rounded-lg animate-fade-in no-print">
@@ -555,50 +510,26 @@ export default function ScheduleApp() {
         </div>
       )}
 
-      {/* 設定モーダル */}
       {showConfig && (
         <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center p-4 no-print">
           <div className="bg-white rounded-lg shadow-2xl w-full max-w-6xl max-h-[90vh] overflow-y-auto p-6 relative animate-fade-in">
             <button onClick={() => setShowConfig(false)} className="absolute top-4 right-4 text-gray-500 hover:text-gray-800 text-xl font-bold">✕</button>
             <h2 className="font-bold text-xl mb-4 text-gray-700 border-b pb-2">⚙️ マスタ設定</h2>
             
-            {/* ★ v26: 外部負荷設定への切り替え */}
             <div className="flex gap-4 mb-4 border-b">
               <button onClick={() => setShowExternalLoad(false)} className={`pb-2 font-bold ${!showExternalLoad ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500"}`}>基本設定</button>
               <button onClick={() => setShowExternalLoad(true)} className={`pb-2 font-bold ${showExternalLoad ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500"}`}>📅 他学年・午前コマ数登録</button>
             </div>
 
             {showExternalLoad ? (
-              // ★ v26: 外部負荷入力テーブル
               <div className="overflow-x-auto">
                 <div className="bg-yellow-50 p-2 mb-2 rounded text-sm text-yellow-800 border border-yellow-200">※ここに「午前中」や「他学年」ですでに入っている授業コマ数を入力してください。自動生成や警告に反映されます。</div>
                 <table className="w-full border-collapse text-sm">
-                  <thead>
-                    <tr><th className="border p-2 bg-gray-100 min-w-[100px]">講師名</th>{config.dates.map(d => <th key={d} className="border p-2 bg-gray-100 min-w-[60px]">{d}</th>)}</tr>
-                  </thead>
-                  <tbody>
-                    {config.teachers.map(t => (
-                      <tr key={t.name}>
-                        <td className="border p-2 font-bold bg-gray-50">{t.name}</td>
-                        {config.dates.map(d => (
-                          <td key={d} className="border p-0">
-                            <input 
-                              type="number" 
-                              min="0"
-                              className="w-full h-full p-2 text-center focus:bg-blue-50 focus:outline-none" 
-                              value={config.externalCounts?.[`${d}-${t.name}`] || ""} 
-                              placeholder="-"
-                              onChange={(e) => handleExternalCountChange(d, t.name, e.target.value)} 
-                            />
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
+                  <thead><tr><th className="border p-2 bg-gray-100 min-w-[100px]">講師名</th>{config.dates.map(d => <th key={d} className="border p-2 bg-gray-100 min-w-[60px]">{d}</th>)}</tr></thead>
+                  <tbody>{config.teachers.map(t => (<tr key={t.name}><td className="border p-2 font-bold bg-gray-50">{t.name}</td>{config.dates.map(d => (<td key={d} className="border p-0"><input type="number" min="0" className="w-full h-full p-2 text-center focus:bg-blue-50 focus:outline-none" value={config.externalCounts?.[`${d}-${t.name}`] || ""} placeholder="-" onChange={(e) => handleExternalCountChange(d, t.name, e.target.value)} /></td>))}</tr>))}</tbody>
                 </table>
               </div>
             ) : (
-              // 既存の設定画面
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="space-y-4">
                   <div><label className="text-xs font-bold">日付</label><textarea className="w-full border p-2 text-sm h-16" value={config.dates.join(", ")} onChange={(e) => handleListConfigChange('dates', e.target.value)} /></div>
@@ -618,7 +549,6 @@ export default function ScheduleApp() {
         </div>
       )}
       
-      {/* メインテーブル */}
       <div className={`overflow-auto shadow-lg rounded-lg border border-gray-300 max-h-[80vh] print-container ${isCompact ? "text-xs" : "text-sm"}`}>
         <table className="border-collapse w-full bg-white text-left relative">
           <thead className="sticky top-0 z-30 bg-gray-800 text-white shadow-md">
@@ -687,16 +617,13 @@ export default function ScheduleApp() {
                               {filteredTeachers.map(t => {
                                 const isNgSlot = t.ngSlots?.includes(`${date}-${period}`);
                                 const isNgClass = t.ngClasses?.includes(cls);
-                                // ★ v26: 外部負荷考慮
                                 const counts = analysis.teacherDailyCounts[`${date}-${t.name}`] || { current: 0, external: 0, total: 0 };
-                                const isOverworked = counts.total >= 4; // 1日4コマ以上で警告
-                                
+                                const isOverworked = counts.total >= 4; 
                                 const isDisabled = isNgSlot || isNgClass;
                                 let label = t.name;
                                 if (isDisabled) label += isNgSlot ? "(NG時)" : "(クラス外)";
                                 else label += ` (計${counts.total})`;
                                 if (isOverworked) label += "⚠️";
-
                                 return <option key={t.name} value={t.name} disabled={isDisabled} className={isDisabled ? "text-gray-300 bg-gray-100" : (isOverworked ? "bg-yellow-100" : "")}>{label}</option>;
                               })}
                             </select>
