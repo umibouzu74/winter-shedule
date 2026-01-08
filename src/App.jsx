@@ -43,7 +43,7 @@ const toCircleNum = (num) => {
   return circles[num] || `(${num})`;
 };
 
-const STORAGE_KEY_PROJECT = 'winter_schedule_project_v32';
+const STORAGE_KEY_PROJECT = 'winter_schedule_project_v33';
 
 export default function ScheduleApp() {
   const [project, setProject] = useState(() => {
@@ -59,8 +59,8 @@ export default function ScheduleApp() {
   const [history, setHistory] = useState([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [showConfig, setShowConfig] = useState(false);
+  const [configTab, setConfigTab] = useState('basic'); // 'basic' | 'external' | 'ng'
   const [showSummary, setShowSummary] = useState(false);
-  const [showExternalLoad, setShowExternalLoad] = useState(false);
   const [generatedPatterns, setGeneratedPatterns] = useState([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [saveStatus, setSaveStatus] = useState("✅ 保存済");
@@ -69,7 +69,6 @@ export default function ScheduleApp() {
   const [clipboard, setClipboard] = useState(null);
   const [isCompact, setIsCompact] = useState(false);
   const [dragSource, setDragSource] = useState(null);
-  const [editingNgIndex, setEditingNgIndex] = useState(null);
 
   const fileInputRef = useRef(null);
 
@@ -213,6 +212,8 @@ export default function ScheduleApp() {
     if(t.subjects.includes(subj)) t.subjects = t.subjects.filter(s=>s!==subj); else t.subjects.push(subj);
     pushHistory({ ...project, teachers: newTeachers });
   };
+  
+  // ★ v33: NG一括操作用
   const toggleTeacherNg = (idx, d, p) => {
     const newTeachers = [...project.teachers]; const t = newTeachers[idx]; const k = `${d}-${p}`;
     if(!t.ngSlots) t.ngSlots = []; if(t.ngSlots.includes(k)) t.ngSlots = t.ngSlots.filter(x=>x!==k); else t.ngSlots.push(k);
@@ -283,12 +284,8 @@ export default function ScheduleApp() {
   const handleResetAll = () => { if(window.confirm("全データ削除しますか？")) { localStorage.removeItem(STORAGE_KEY_PROJECT); window.location.reload(); }};
   const applyPattern = (pat) => { const newTabs = project.tabs.map(t => t.id === project.activeTabId ? { ...t, schedule: pat } : t); pushHistory({ ...project, tabs: newTabs }); setGeneratedPatterns([]); };
   const handleLoadJson = (e) => { const f=e.target.files[0]; if(!f)return; const r=new FileReader(); r.onload=(ev)=>{try{const data=JSON.parse(ev.target.result); pushHistory(cleanSchedule(data)); alert("読込完了");}catch{alert("エラー");}}; r.readAsText(f); e.target.value=''; };
-  const handleSaveJson = () => { 
-    const cleaned = cleanSchedule(project);
-    const b=new Blob([JSON.stringify(cleaned,null,2)],{type:"application/json"}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`schedule_project_v32.json`; a.click(); 
-  };
+  const handleSaveJson = () => { const cleaned = cleanSchedule(project); const b=new Blob([JSON.stringify(cleaned,null,2)],{type:"application/json"}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`schedule_project_v33.json`; a.click(); };
 
-  // ★ v32: 賢い自動生成 (Load Balancing)
   const generateSchedule = () => {
     setIsGenerating(true);
     setTimeout(() => {
@@ -305,39 +302,28 @@ export default function ScheduleApp() {
       Object.keys(currentSchedule).forEach(k => { const e=currentSchedule[k]; if(e?.subject) counts[k.split('-')[2]][e.subject]++; });
 
       const solve = (idx, tempSch, tempCnt, iter={c:0}) => {
-        if (iter.c++ > 80000 || solutions.length >= 3) return; // 試行回数を少し増加
+        if (iter.c++ > 80000 || solutions.length >= 3) return; 
         if (idx >= slots.length) { solutions.push(JSON.parse(JSON.stringify(tempSch))); return; }
-        
         const {d, p, c, k, fixedSubject} = slots[idx];
         const subjectsToTry = fixedSubject ? [fixedSubject] : commonSubjects.sort(() => Math.random() - 0.5);
-
         for (const s of subjectsToTry) {
           if (!fixedSubject && (tempCnt[c][s]||0) >= currentConfig.subjectCounts[s]) continue;
           if (!fixedSubject && currentConfig.periods.some(per => tempSch[`${d}-${per}-${c}`]?.subject === s)) continue;
-          
           const validT = project.teachers.filter(t => t.subjects.includes(s) && !t.ngClasses?.includes(c) && !t.ngSlots?.includes(`${d}-${p}`));
-          
           let availT = validT.map(t => {
              const dayKey = `${d}-${t.name}`;
              const ext = analysis.teacherDailyCounts[dayKey]?.external || 0;
              const currentTabCount = analysis.teacherDailyCounts[dayKey]?.current || 0; 
-             // tempSch内でのカウントも考慮したいが重くなるので、現在の解析値を利用
              return { teacher: t, load: ext + currentTabCount };
-          }).filter(item => item.load < 5); // 1日5コマ未満
-
-          // ★ v32: 負荷が低い順に並べ替えて、低い人から優先的に選ぶ (Load Balancing)
-          // 完全な順番通りだと同じ人ばかりになるので、少しランダム性を残す
+          }).filter(item => item.load < 5); 
           availT.sort((a, b) => a.load - b.load + (Math.random() * 0.5)); 
-
           for (const item of availT) {
              const tName = item.teacher.name;
              if (!currentConfig.classes.some(oc => oc!==c && tempSch[`${d}-${p}-${oc}`]?.teacher===tName)) {
                 tempSch[k] = { subject: s, teacher: tName }; 
                 if(!fixedSubject) tempCnt[c][s]++;
-                
                 solve(idx+1, tempSch, tempCnt, iter);
                 if (solutions.length>=3) return;
-                
                 if(fixedSubject) tempSch[k] = { subject: fixedSubject, teacher: "" };
                 else { delete tempSch[k]; tempCnt[c][s]--; }
              }
@@ -346,11 +332,11 @@ export default function ScheduleApp() {
       };
       solve(0, JSON.parse(JSON.stringify(currentSchedule)), JSON.parse(JSON.stringify(counts)));
       setGeneratedPatterns(solutions); setIsGenerating(false);
-      if(solutions.length===0) alert("条件に合うパターンが見つかりませんでした。\n条件を緩和するか、一部手動で埋めてください。");
+      if(solutions.length===0) alert("条件に合うパターンが見つかりませんでした。");
     }, 100);
   };
 
-  const handleDownloadExcel = () => { /* Export Logic */ 
+  const handleDownloadExcel = () => { 
     const cleaned = cleanSchedule(project);
     const wb = XLSX.utils.book_new();
     cleaned.tabs.forEach(tab => {
@@ -393,12 +379,8 @@ export default function ScheduleApp() {
     <div className="p-4 bg-gray-100 min-h-screen font-sans" onClick={() => setContextMenu(null)}>
       <style>{printStyle}</style>
 
-      {/* Header */}
       <div className="flex justify-between items-center mb-2 no-print bg-white p-3 rounded shadow-sm border-b border-gray-200">
-        <div className="flex items-center gap-2">
-          <h1 className="text-xl font-bold text-gray-700">📅 時間割作成くん v32</h1>
-          <span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded border border-green-200">{saveStatus}</span>
-        </div>
+        <div className="flex items-center gap-2"><h1 className="text-xl font-bold text-gray-700">📅 時間割作成くん v33</h1><span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded border border-green-200">{saveStatus}</span></div>
         <div className="flex gap-2">
           <button onClick={handleSaveJson} className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 shadow text-sm font-bold">💾 プロジェクト保存</button>
           <button onClick={() => fileInputRef.current.click()} className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 shadow text-sm font-bold">📂 開く</button>
@@ -407,7 +389,6 @@ export default function ScheduleApp() {
         </div>
       </div>
 
-      {/* Tabs */}
       <div className="flex items-end gap-1 px-2 no-print overflow-x-auto">
         {project.tabs.map(tab => (
           <div key={tab.id} onClick={() => { setProject({ ...project, activeTabId: tab.id }); setHistoryIndex(historyIndex); }} onDoubleClick={(e) => handleRenameTab(e, tab.id)} className={`px-4 py-2 rounded-t-lg cursor-pointer flex items-center gap-2 select-none transition-all ${project.activeTabId === tab.id ? "bg-white text-blue-700 font-bold shadow-[0_-2px_5px_rgba(0,0,0,0.05)] pt-3" : "bg-gray-200 text-gray-500 hover:bg-gray-300 mt-1"}`}>
@@ -417,7 +398,6 @@ export default function ScheduleApp() {
         <button onClick={handleAddTab} className="px-3 py-2 text-gray-500 hover:text-blue-600 font-bold text-sm">+ タブ追加</button>
       </div>
 
-      {/* Main Content */}
       <div className="bg-white p-4 rounded-b-lg rounded-tr-lg shadow-md min-h-[600px]">
         <div className="flex flex-wrap items-center justify-between gap-4 mb-4 p-2 bg-slate-50 border border-slate-200 rounded no-print">
           <div className="flex items-center gap-3 bg-white px-3 py-1.5 rounded border border-gray-200 shadow-sm flex-1 min-w-[250px]">
@@ -447,8 +427,7 @@ export default function ScheduleApp() {
               <div className="flex flex-wrap gap-2">
                 {Object.entries(analysis.teacherDailyCounts).filter(([k]) => k.startsWith(currentConfig.dates[0])).map(([k, v]) => { 
                    const name = k.split('-')[1];
-                   let total = 0;
-                   currentConfig.dates.forEach(d => { total += analysis.teacherDailyCounts[`${d}-${name}`]?.total || 0; });
+                   let total = 0; currentConfig.dates.forEach(d => { total += analysis.teacherDailyCounts[`${d}-${name}`]?.total || 0; });
                    if (total === 0) return null;
                    return (<div key={name} className="bg-white px-2 py-1 rounded border shadow-sm text-sm flex items-center gap-2"><span className="font-bold">{name}</span><span className="bg-blue-100 text-blue-800 px-1 rounded">{total}</span></div>);
                 })}
@@ -468,12 +447,55 @@ export default function ScheduleApp() {
           <div className="fixed inset-0 bg-black/50 z-50 flex justify-center items-center p-4 no-print">
             <div className="bg-white w-full max-w-5xl h-[85vh] rounded-lg shadow-2xl flex flex-col overflow-hidden animate-fade-in">
               <div className="p-4 border-b flex justify-between items-center bg-gray-50"><h2 className="font-bold text-lg text-gray-700">⚙️ 設定メニュー</h2><button onClick={() => setShowConfig(false)} className="text-2xl font-bold text-gray-400 hover:text-gray-600">×</button></div>
-              <div className="flex gap-4 px-6 pt-4 border-b"><button onClick={() => setShowExternalLoad(false)} className={`pb-2 font-bold ${!showExternalLoad ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500"}`}>基本設定</button><button onClick={() => setShowExternalLoad(true)} className={`pb-2 font-bold ${showExternalLoad ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500"}`}>📅 他学年・午前登録</button></div>
+              <div className="flex gap-4 px-6 pt-4 border-b">
+                <button onClick={() => setConfigTab('basic')} className={`pb-2 font-bold ${configTab==='basic' ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500"}`}>基本設定</button>
+                <button onClick={() => setConfigTab('external')} className={`pb-2 font-bold ${configTab==='external' ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500"}`}>📅 他学年・午前登録</button>
+                <button onClick={() => setConfigTab('ng')} className={`pb-2 font-bold ${configTab==='ng' ? "text-blue-600 border-b-2 border-blue-600" : "text-gray-500"}`}>🚫 NG一括設定</button>
+              </div>
               <div className="flex-1 overflow-y-auto p-6">
-                {showExternalLoad ? (
+                {configTab === 'external' ? (
                   <div className="overflow-x-auto">
                     <div className="bg-yellow-50 p-3 mb-4 rounded text-sm text-yellow-800 border border-yellow-200"><strong>他学年・午前のコマ数登録:</strong><br/>ここで入力した数字は、自動作成時の制限や、プルダウンの「(計X)」に加算されます。</div>
                     <table className="w-full border-collapse text-sm"><thead><tr><th className="border p-2 bg-gray-100 min-w-[100px] sticky left-0 z-10">講師名</th>{currentConfig.dates.map(d => <th key={d} className="border p-2 bg-gray-100 min-w-[60px] text-center">{d}</th>)}</tr></thead><tbody>{project.teachers.map(t => (<tr key={t.name}><td className="border p-2 font-bold bg-gray-50 sticky left-0 z-10">{t.name}</td>{currentConfig.dates.map(d => (<td key={d} className="border p-0"><input type="number" min="0" className="w-full h-full p-2 text-center focus:bg-blue-50 focus:outline-none" value={project.externalCounts?.[`${d}-${t.name}`] || ""} placeholder="-" onChange={(e) => handleExternalCountChange(d, t.name, e.target.value)} /></td>))}</tr>))}</tbody></table>
+                  </div>
+                ) : configTab === 'ng' ? (
+                  /* ★ v33: NG一括設定マトリクス */
+                  <div className="overflow-x-auto">
+                    <div className="bg-red-50 p-3 mb-4 rounded text-sm text-red-800 border border-red-200"><strong>NG一括設定:</strong><br/>クリックしてNG（赤）/ OK（白）を切り替えます。全タブ共通の設定です。</div>
+                    <table className="w-full border-collapse text-xs whitespace-nowrap">
+                      <thead>
+                        <tr>
+                          <th className="border p-2 bg-gray-100 sticky left-0 z-20">講師名</th>
+                          {currentConfig.dates.map(d => (
+                            currentConfig.periods.map(p => (
+                              <th key={`${d}-${p}`} className="border p-1 bg-gray-50 font-normal min-w-[40px] text-center">{d}<br/>{p}</th>
+                            ))
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {project.teachers.map((t, idx) => (
+                          <tr key={t.name}>
+                            <td className="border p-2 font-bold bg-gray-50 sticky left-0 z-10">{t.name}</td>
+                            {currentConfig.dates.map(d => (
+                              currentConfig.periods.map(p => {
+                                const k = `${d}-${p}`;
+                                const isNg = t.ngSlots?.includes(k);
+                                return (
+                                  <td 
+                                    key={k} 
+                                    onClick={() => toggleTeacherNg(idx, d, p)}
+                                    className={`border p-1 text-center cursor-pointer hover:opacity-80 transition-colors ${isNg ? "bg-red-500 text-white font-bold" : "bg-white"}`}
+                                  >
+                                    {isNg ? "NG" : ""}
+                                  </td>
+                                );
+                              })
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -523,7 +545,10 @@ export default function ScheduleApp() {
                         const isOver = maxCnt > 0 && order > maxCnt;
                         const filteredTeachers = entry.subject ? project.teachers.filter(t => t.subjects.includes(entry.subject)) : project.teachers;
                         
-                        // ★ v32: ロック時の視覚効果（ストライプ）
+                        // ★ v33: 科目重複チェック (1日1回制限)
+                        const subjDupKey = `${c}-${d}-${entry.subject}`;
+                        const isSubjDup = analysis.dailySubjectMap[subjDupKey] > 1;
+
                         const cellColor = isConflict ? "bg-red-200" : getSubjectColor(entry.subject);
                         const lockedStyle = isLocked ? "border-2 border-gray-600 opacity-90" : "border border-gray-200";
                         const stripeStyle = isLocked ? { backgroundImage: 'repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(0,0,0,0.05) 5px, rgba(0,0,0,0.05) 10px)' } : {};
@@ -538,14 +563,22 @@ export default function ScheduleApp() {
                                 <div className="relative flex-1">
                                   <select 
                                     id={`select-${dIdx}-${pIdx}-${cIdx}-subject`}
-                                    className={`w-full bg-transparent font-bold focus:outline-none cursor-pointer text-gray-800 ${isCompact ? "text-[10px]" : "text-sm"} ${isLocked ? "pointer-events-none" : ""}`}
+                                    // ★ v33: 重複時は文字を赤くする
+                                    className={`w-full bg-transparent font-bold focus:outline-none cursor-pointer text-gray-800 ${isSubjDup ? "text-red-600 underline" : ""} ${isCompact ? "text-[10px]" : "text-sm"} ${isLocked ? "pointer-events-none" : ""}`}
                                     value={entry.subject || ""}
                                     onChange={(e) => handleAssign(d, p, c, 'subject', e.target.value)}
                                     onKeyDown={(e) => handleCellNavigation(e, dIdx, pIdx, cIdx, 'subject')}
                                   >
-                                    <option value="">-</option>{commonSubjects.map(s => <option key={s} value={s}>{s}</option>)}
+                                    <option value="">-</option>
+                                    {commonSubjects.map(s => {
+                                      // ★ v33: 選択肢自体もdisabledにする（既存機能維持）
+                                      const isAlreadyUsed = analysis.dailySubjectMap[`${c}-${d}-${s}`] > 0 && entry.subject !== s;
+                                      return <option key={s} value={s} disabled={isAlreadyUsed} className={isAlreadyUsed ? "bg-gray-200" : ""}>{s}</option>;
+                                    })}
                                   </select>
-                                  {entry.subject && <span className={`absolute right-0 top-0 text-[9px] px-1 rounded-full ${isOver ? "bg-red-500 text-white" : "bg-white/60 text-gray-600 border"}`}>{toCircleNum(order)}{isOver&&"!"}</span>}
+                                  {/* ★ v33: 重複アラート表示 */}
+                                  {isSubjDup && <span className="absolute left-0 -top-4 bg-red-600 text-white text-[9px] px-1 rounded z-50">⚠️1日2回</span>}
+                                  {entry.subject && !isSubjDup && <span className={`absolute right-0 top-0 text-[9px] px-1 rounded-full ${isOver ? "bg-red-500 text-white" : "bg-white/60 text-gray-600 border"}`}>{toCircleNum(order)}{isOver&&"!"}</span>}
                                 </div>
                                 <button onClick={() => toggleLock(d, p, c)} className={`ml-1 focus:outline-none text-gray-400 hover:text-gray-800 ${isCompact ? "text-[8px]" : "text-xs"}`}>{isLocked ? "🔒" : "🔓"}</button>
                               </div>
@@ -561,13 +594,8 @@ export default function ScheduleApp() {
                                   const dayKey = `${d}-${t.name}`;
                                   const daily = analysis.teacherDailyCounts[dayKey] || { total: 0 };
                                   const isNg = t.ngSlots?.includes(`${d}-${p}`);
-                                  
-                                  // ★ v32: 未定はカウントしない
                                   let label = t.name;
-                                  if (t.name !== "未定") {
-                                    if (isNg) label += " (NG)"; else label += ` (計${daily.total})`;
-                                  }
-                                  
+                                  if (t.name !== "未定") { if (isNg) label += " (NG)"; else label += ` (計${daily.total})`; }
                                   return <option key={t.name} value={t.name} className={isNg ? "bg-gray-300 text-gray-500" : (daily.total >= 4 ? "bg-yellow-100" : "")} disabled={isNg}>{label}</option>;
                                 })}
                               </select>
