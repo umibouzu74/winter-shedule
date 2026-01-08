@@ -1,23 +1,18 @@
 import React, { useState, useMemo, useRef } from 'react';
 
-// --- 初期データ定義 (v10: 講師リスト更新版) ---
+// --- 初期データ定義 ---
 const INITIAL_CONFIG = {
-  // 6日間 = 18コマ
   dates: ["12/25(木)", "12/26(金)", "12/27(土)", "1/4(日)", "1/6(火)", "1/7(水)"],
   periods: ["1限 (13:00~)", "2限 (14:10~)", "3限 (15:20~)"],
   classes: ["Sクラス", "Aクラス", "Bクラス", "Cクラス"],
   subjects: ["英語", "数学", "国語", "理科", "社会"],
-  // 合計18コマの内訳
   subjectCounts: { "英語": 4, "数学": 4, "国語": 3, "理科": 4, "社会": 3 },
   
-  // ★ここで初期講師を設定
   teachers: [
-    // 英語
     { name: "堀上", subjects: ["英語"], ngSlots: [], ngClasses: [] },
     { name: "石原", subjects: ["英語"], ngSlots: [], ngClasses: [] },
     { name: "高松", subjects: ["英語"], ngSlots: [], ngClasses: [] },
     { name: "南條", subjects: ["英語"], ngSlots: [], ngClasses: [] },
-    // 数学
     { name: "片岡", subjects: ["数学"], ngSlots: [], ngClasses: [] },
     { name: "半田", subjects: ["数学"], ngSlots: [], ngClasses: [] },
     { name: "香川", subjects: ["数学"], ngSlots: [], ngClasses: [] },
@@ -25,18 +20,23 @@ const INITIAL_CONFIG = {
     { name: "河野", subjects: ["数学"], ngSlots: [], ngClasses: [] },
     { name: "杉原", subjects: ["数学"], ngSlots: [], ngClasses: [] },
     { name: "奥村", subjects: ["数学"], ngSlots: [], ngClasses: [] },
-    // 国語
     { name: "小松", subjects: ["国語"], ngSlots: [], ngClasses: [] },
     { name: "松川", subjects: ["国語"], ngSlots: [], ngClasses: [] },
-    // 理科
     { name: "三宮", subjects: ["理科"], ngSlots: [], ngClasses: [] },
     { name: "滝澤", subjects: ["理科"], ngSlots: [], ngClasses: [] },
-    // 社会
     { name: "井上", subjects: ["社会"], ngSlots: [], ngClasses: [] },
     { name: "野口", subjects: ["社会"], ngSlots: [], ngClasses: [] },
-    // 予備 (すべての科目を担当可)
     { name: "未定", subjects: ["英語", "数学", "国語", "理科", "社会"], ngSlots: [], ngClasses: [] }
   ]
+};
+
+// ★色分け設定 (v11新機能)
+const SUBJECT_COLORS = {
+  "英語": "bg-red-100",   // ピンク系
+  "数学": "bg-blue-100",  // 青系
+  "国語": "bg-yellow-100",// 黄色系
+  "理科": "bg-green-100", // 緑系
+  "社会": "bg-purple-100" // 紫系
 };
 
 const toCircleNum = (num) => {
@@ -171,7 +171,6 @@ export default function ScheduleApp() {
 
   const analysis = useMemo(() => analyzeSchedule(schedule), [schedule, config]);
 
-  // --- 集計表生成用コンポーネント ---
   const SummaryTable = ({ targetSchedule }) => {
     const summary = {};
     config.classes.forEach(cls => {
@@ -224,14 +223,12 @@ export default function ScheduleApp() {
     );
   };
 
-  // --- 自動生成ロジック ---
   const generateSchedule = () => {
     setIsGenerating(true);
     setTimeout(() => {
       const solutions = [];
       const slots = [];
       
-      // 空きスロット抽出
       config.dates.forEach(date => {
         config.periods.forEach(period => {
           config.classes.forEach(cls => {
@@ -243,7 +240,6 @@ export default function ScheduleApp() {
         });
       });
 
-      // 現在のカウント状況
       const currentCounts = {};
       config.classes.forEach(cls => {
         currentCounts[cls] = {};
@@ -257,7 +253,6 @@ export default function ScheduleApp() {
         }
       });
 
-      // フリーズ防止用のカウンタ
       let iterationCount = 0;
       const MAX_ITERATIONS = 5000000; 
 
@@ -274,7 +269,6 @@ export default function ScheduleApp() {
         const slot = slots[index];
         const { date, period, cls, key } = slot;
         
-        // 優先順位付け: 残り回数が多い科目から
         const sortedSubjects = [...config.subjects].sort((a, b) => {
           const maxA = config.subjectCounts[a] || 0;
           const maxB = config.subjectCounts[b] || 0;
@@ -333,7 +327,7 @@ export default function ScheduleApp() {
       setIsGenerating(false);
 
       if (iterationCount > MAX_ITERATIONS) {
-        alert("計算回数が上限を超えました。条件を少し緩和して再試行してください。");
+        alert("計算回数が上限を超えました。");
       } else if (solutions.length === 0) {
         alert("条件を満たすパターンが見つかりませんでした。");
       }
@@ -347,12 +341,12 @@ export default function ScheduleApp() {
   };
 
   const handleSaveJson = () => {
-    const saveData = { version: 10, config, schedule };
+    const saveData = { version: 11, config, schedule };
     const blob = new Blob([JSON.stringify(saveData, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `schedule_v10_${new Date().toISOString().slice(0,10)}.json`;
+    link.download = `schedule_v11_${new Date().toISOString().slice(0,10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -384,8 +378,8 @@ export default function ScheduleApp() {
     <div className="p-4 bg-gray-50 min-h-screen font-sans">
       <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">冬期講習 時間割エディタ v10</h1>
-          <p className="text-sm text-gray-600">最終完成版</p>
+          <h1 className="text-2xl font-bold text-gray-800">冬期講習 時間割エディタ v11</h1>
+          <p className="text-sm text-gray-600">科目別色分け機能搭載</p>
         </div>
         <div className="flex gap-2">
            <button onClick={() => setShowSummary(!showSummary)} className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 shadow flex items-center gap-2">📊 集計</button>
@@ -553,12 +547,18 @@ export default function ScheduleApp() {
                     const isCountOver = maxCount > 0 && order > maxCount;
                     const filteredTeachers = currentSubject ? config.teachers.filter(t => t.subjects.includes(currentSubject)) : config.teachers;
 
+                    // ★v11 色分けロジック
+                    const subjectColor = SUBJECT_COLORS[currentSubject] || "bg-white"; // デフォルト白
+                    const cellBgColor = isTeacherConflict ? "bg-red-200" : subjectColor; // エラー時は赤優先
+                    const borderColor = isTeacherConflict ? "border-red-400 border-2" : "border-gray-200 border";
+
                     return (
-                      <td key={cls} className={`p-2 border-r last:border-0 ${isTeacherConflict ? "bg-red-50" : ""}`}>
-                        <div className={`flex flex-col gap-2 p-2 rounded ${isTeacherConflict ? "border-2 border-red-400" : "border border-gray-200"}`}>
+                      <td key={cls} className={`p-2 border-r last:border-0`}>
+                        {/* 背景色を適用するdiv */}
+                        <div className={`flex flex-col gap-2 p-2 rounded ${borderColor} ${cellBgColor}`}>
                           <div className="relative">
                             <select 
-                              className={`w-full font-medium focus:outline-none cursor-pointer appearance-none ${isCountOver ? "text-red-600 font-bold" : "text-gray-700"} bg-transparent`}
+                              className={`w-full font-medium focus:outline-none cursor-pointer appearance-none ${isCountOver ? "text-red-600 font-bold" : "text-gray-800"} bg-transparent`}
                               onChange={(e) => handleAssign(date, period, cls, 'subject', e.target.value)}
                               value={currentSubject}
                             >
@@ -570,11 +570,11 @@ export default function ScheduleApp() {
                                 return <option key={s} value={s} disabled={isDailyDup} className={isDailyDup ? "bg-gray-200 text-gray-400" : ""}>{s} {isDailyDup ? "(1日1回済)" : ""}</option>;
                               })}
                             </select>
-                            {currentSubject && <div className={`absolute right-0 top-0 text-xs px-1 rounded pointer-events-none ${isCountOver ? "bg-red-500 text-white" : "bg-blue-100 text-blue-800"}`}>{toCircleNum(order)} {isCountOver && "⚠"}</div>}
+                            {currentSubject && <div className={`absolute right-0 top-0 text-xs px-1 rounded pointer-events-none ${isCountOver ? "bg-red-500 text-white" : "bg-white/80 text-blue-800 border"}`}>{toCircleNum(order)} {isCountOver && "⚠"}</div>}
                           </div>
                           
                           <select 
-                            className={`w-full p-1 rounded font-bold cursor-pointer ${isTeacherConflict ? "text-red-600 bg-red-100" : "text-blue-900 bg-blue-50"} ${!currentSubject ? "opacity-50" : ""}`}
+                            className={`w-full p-1 rounded font-bold cursor-pointer ${isTeacherConflict ? "text-red-600 bg-red-100" : "text-blue-900 bg-white/50"} ${!currentSubject ? "opacity-50" : ""}`}
                             onChange={(e) => handleAssign(date, period, cls, 'teacher', e.target.value)}
                             value={currentTeacher}
                             disabled={!currentSubject}
