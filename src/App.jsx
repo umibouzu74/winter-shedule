@@ -68,6 +68,9 @@ export default function ScheduleApp() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [saveStatus, setSaveStatus] = useState("✅ 自動保存済み");
   
+  // ★ v19: ハイライトする講師名のState
+  const [highlightTeacher, setHighlightTeacher] = useState(null);
+  
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -321,12 +324,20 @@ export default function ScheduleApp() {
     return (
       <div className="flex flex-col gap-6">
         <div className="bg-white p-4 rounded shadow border border-gray-300">
-          <h3 className="font-bold text-gray-700 mb-3 border-b pb-2">📊 講師別 担当コマ数ランキング</h3>
+          <h3 className="font-bold text-gray-700 mb-3 border-b pb-2 flex justify-between items-center">
+            <span>📊 講師別 担当コマ数ランキング</span>
+            <span className="text-xs font-normal text-gray-500">※名前クリックでハイライト</span>
+          </h3>
           <div className="space-y-2">
             {sortedTeachers.map(([name, count]) => (
-              <div key={name} className="flex items-center text-sm">
+              // ★ v19: クリックでハイライト切り替え
+              <div 
+                key={name} 
+                className={`flex items-center text-sm cursor-pointer p-1 rounded hover:bg-gray-100 transition-colors ${highlightTeacher === name ? "bg-yellow-100 ring-2 ring-yellow-400" : ""}`}
+                onClick={() => setHighlightTeacher(highlightTeacher === name ? null : name)}
+              >
                 <div className="w-20 font-bold text-gray-700 text-right pr-2 truncate">{name}</div>
-                <div className="flex-1 bg-gray-100 rounded-full h-4 overflow-hidden">
+                <div className="flex-1 bg-gray-100 rounded-full h-4 overflow-hidden relative">
                   <div className={`h-full ${name === "未定" ? "bg-red-400" : "bg-blue-500"}`} style={{ width: `${(count / maxCount) * 100}%` }}></div>
                 </div>
                 <div className="w-10 pl-2 font-bold text-gray-600">{count}</div>
@@ -462,7 +473,6 @@ export default function ScheduleApp() {
   };
 
   const handleDownloadExcel = () => {
-    // 1. 時間割シート
     const headerRow = ["日付", "時限", ...config.classes];
     const dataRows = [];
     config.dates.forEach(date => {
@@ -485,7 +495,6 @@ export default function ScheduleApp() {
     ws1['!cols'] = [{ wch: 15 }, { wch: 15 }, ...config.classes.map(() => ({ wch: 20 }))];
     XLSX.utils.book_append_sheet(wb, ws1, "時間割");
 
-    // 2. 講師別集計シート
     const teacherTotals = {};
     Object.keys(schedule).forEach(key => {
       const t = schedule[key]?.teacher;
@@ -498,12 +507,9 @@ export default function ScheduleApp() {
     const ws2 = XLSX.utils.aoa_to_sheet(summaryRows);
     XLSX.utils.book_append_sheet(wb, ws2, "講師別集計");
 
-    // ★ v18 新機能: 個人別シフトシート
     const personalRows = [];
     config.teachers.forEach(teacher => {
-      if (teacher.name === "未定") return; // 未定はスキップ
-
-      // 担当コマがあるかチェック
+      if (teacher.name === "未定") return; 
       const mySlots = [];
       config.dates.forEach(date => {
         config.periods.forEach(period => {
@@ -515,18 +521,16 @@ export default function ScheduleApp() {
           });
         });
       });
-
       if (mySlots.length > 0) {
         personalRows.push([`■ ${teacher.name} 先生`]);
         personalRows.push(["日付", "時限", "担当クラス", "科目"]);
         mySlots.forEach(slot => {
           personalRows.push([slot.date, slot.period, slot.cls, slot.subject]);
         });
-        personalRows.push([]); // 空行
+        personalRows.push([]); 
         personalRows.push([]); 
       }
     });
-    
     if (personalRows.length > 0) {
       const ws3 = XLSX.utils.aoa_to_sheet(personalRows);
       ws3['!cols'] = [{ wch: 15 }, { wch: 10 }, { wch: 15 }, { wch: 10 }];
@@ -551,8 +555,8 @@ export default function ScheduleApp() {
     <div className="p-4 bg-gray-50 min-h-screen font-sans">
       <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">冬期講習 時間割エディタ v18</h1>
-          <p className="text-sm text-gray-600">個人別シフト出力機能搭載</p>
+          <h1 className="text-2xl font-bold text-gray-800">冬期講習 時間割エディタ v19</h1>
+          <p className="text-sm text-gray-600">フォーカス（ハイライト）機能搭載</p>
         </div>
         <div className="flex items-center gap-2">
            <span className="text-xs text-green-600 font-bold mr-2">{saveStatus}</span>
@@ -744,9 +748,13 @@ export default function ScheduleApp() {
                       const cellBgColor = isTeacherConflict ? "bg-red-200" : subjectColor; 
                       const borderColor = isTeacherConflict ? "border-red-400 border-2" : (isLocked ? "border-gray-500 border-2" : "border-gray-200 border");
 
+                      // ★ v19: ハイライト処理
+                      // ハイライトモード中で、かつこの先生がハイライト対象でない場合、薄くする
+                      const isDimmed = highlightTeacher && currentTeacher !== highlightTeacher;
+
                       return (
                         <td key={cls} className={`p-2 border-r last:border-0`}>
-                          <div className={`flex flex-col gap-2 p-2 rounded ${borderColor} ${cellBgColor} ${isLocked ? "bg-opacity-100 shadow-inner" : "bg-opacity-90"}`}>
+                          <div className={`flex flex-col gap-2 p-2 rounded ${borderColor} ${cellBgColor} ${isLocked ? "bg-opacity-100 shadow-inner" : "bg-opacity-90"} ${isDimmed ? "opacity-25 grayscale" : "transition-opacity"}`}>
                             <div className="flex justify-between items-start">
                                <div className="relative flex-1">
                                   <select 
