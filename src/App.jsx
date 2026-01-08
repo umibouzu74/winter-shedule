@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useRef } from 'react';
 
-// --- 初期データ定義 (v8: 日程とコマ数を現実に合わせました) ---
+// --- 初期データ定義 ---
 const INITIAL_CONFIG = {
   // 6日間 = 18コマ
   dates: ["12/25(木)", "12/26(金)", "12/27(土)", "1/4(日)", "1/6(火)", "1/7(水)"],
@@ -205,7 +205,7 @@ export default function ScheduleApp() {
     );
   };
 
-  // --- 自動生成ロジック (v8: フリーズ防止機能付き) ---
+  // --- ★自動生成ロジック (v9: 賢い優先順位付けと上限緩和) ---
   const generateSchedule = () => {
     setIsGenerating(true);
     setTimeout(() => {
@@ -238,16 +238,15 @@ export default function ScheduleApp() {
         }
       });
 
-      // フリーズ防止用のカウンタ
+      // フリーズ防止用のカウンタ (上限を大幅アップ)
       let iterationCount = 0;
-      const MAX_ITERATIONS = 500000; // この回数を超えたら諦める
+      const MAX_ITERATIONS = 5000000; // 500万回まで許容
 
       const solve = (index, tempSchedule, tempCounts) => {
-        // 安全装置
         iterationCount++;
         if (iterationCount > MAX_ITERATIONS) return;
-
         if (solutions.length >= 3) return;
+
         if (index >= slots.length) {
           solutions.push(JSON.parse(JSON.stringify(tempSchedule)));
           return;
@@ -256,16 +255,23 @@ export default function ScheduleApp() {
         const slot = slots[index];
         const { date, period, cls, key } = slot;
         
-        // ランダム性を出すために科目をシャッフル
-        const shuffledSubjects = [...config.subjects].sort(() => Math.random() - 0.5);
+        // ★改善点: ランダムではなく「残り回数が多い科目」を優先的に試す
+        // これにより、数珠つなぎ的に解ける確率が上がる
+        const sortedSubjects = [...config.subjects].sort((a, b) => {
+          const maxA = config.subjectCounts[a] || 0;
+          const maxB = config.subjectCounts[b] || 0;
+          const remA = maxA - (tempCounts[cls][a] || 0);
+          const remB = maxB - (tempCounts[cls][b] || 0);
+          return remB - remA; // 残りが多い順
+        });
 
-        for (const subject of shuffledSubjects) {
-          // 安全装置が作動していたらループを抜ける
+        for (const subject of sortedSubjects) {
           if (iterationCount > MAX_ITERATIONS) return;
 
           const maxCount = config.subjectCounts[subject] || 0;
           if ((tempCounts[cls][subject] || 0) >= maxCount) continue;
 
+          // 1日1回制限
           let isDailyDup = false;
           config.periods.forEach(p => {
              const checkKey = `${date}-${p}-${cls}`;
@@ -281,6 +287,7 @@ export default function ScheduleApp() {
             return true;
           });
           
+          // 講師はランダム順でOK
           const shuffledTeachers = [...validTeachers].sort(() => Math.random() - 0.5);
 
           for (const teacherObj of shuffledTeachers) {
@@ -300,7 +307,7 @@ export default function ScheduleApp() {
              solve(index + 1, tempSchedule, tempCounts);
 
              if (solutions.length >= 3) return;
-             // バックトラック
+             
              delete tempSchedule[key];
              tempCounts[cls][subject] -= 1;
           }
@@ -313,11 +320,11 @@ export default function ScheduleApp() {
       setIsGenerating(false);
 
       if (iterationCount > MAX_ITERATIONS) {
-        alert("条件が厳しすぎて、時間内にパターンが見つかりませんでした。\n(タイムアウトしました)\n\n・手動でいくつか埋める\n・NG条件を減らす\n・コマ数設定を確認する\nなどを試してください。");
+        alert("計算回数が上限を超えました。\n\n【アドバイス】\nなんでも担当できる講師（a, i, u...）が多すぎると、逆に計算が複雑になりすぎてしまいます。\n\n一時的に「未定」のような万能講師を1〜2名だけにして、他のダミー講師を削除してから再試行してみてください。");
       } else if (solutions.length === 0) {
-        alert("条件をすべて満たすパターンが見つかりませんでした。");
+        alert("条件を満たすパターンが見つかりませんでした。");
       }
-    }, 100);
+    }, 100); // UIブロック回避
   };
 
   const applyPattern = (pattern) => {
@@ -327,12 +334,12 @@ export default function ScheduleApp() {
   };
 
   const handleSaveJson = () => {
-    const saveData = { version: 8, config, schedule };
+    const saveData = { version: 9, config, schedule };
     const blob = new Blob([JSON.stringify(saveData, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `schedule_v8_${new Date().toISOString().slice(0,10)}.json`;
+    link.download = `schedule_v9_${new Date().toISOString().slice(0,10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -364,8 +371,8 @@ export default function ScheduleApp() {
     <div className="p-4 bg-gray-50 min-h-screen font-sans">
       <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">冬期講習 時間割エディタ v8</h1>
-          <p className="text-sm text-gray-600">フリーズ防止機能＆日程最適化</p>
+          <h1 className="text-2xl font-bold text-gray-800">冬期講習 時間割エディタ v9</h1>
+          <p className="text-sm text-gray-600">自動生成ロジック強化版</p>
         </div>
         <div className="flex gap-2">
            <button onClick={() => setShowSummary(!showSummary)} className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 shadow flex items-center gap-2">📊 集計</button>
