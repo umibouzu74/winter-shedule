@@ -2,7 +2,6 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 
 // --- 初期データ定義 ---
-// デフォルト値 (localStorageにユーザー設定がない場合に使用)
 const DEFAULT_INITIAL_TEACHERS = [
   { name: "堀上", subjects: ["英語"], ngSlots: [], ngClasses: [], priorityClasses: [] },
   { name: "石原", subjects: ["英語"], ngSlots: [], ngClasses: [], priorityClasses: [] },
@@ -44,11 +43,15 @@ const toCircleNum = (num) => {
   return circles[num] || `(${num})`;
 };
 
-const STORAGE_KEY_PROJECT = 'winter_schedule_project_v41';
+const STORAGE_KEY_PROJECT = 'winter_schedule_project_v42'; // Key updated for v42
 const STORAGE_KEY_USER_DEFAULTS = 'winter_schedule_user_defaults';
 
 export default function ScheduleApp() {
-  // 初期化ロジック: 保存されたプロジェクト > ユーザー保存のデフォルト > ハードコードされたデフォルト
+  // v42: アプリ起動時にタブ名を変更
+  useEffect(() => {
+    document.title = "時間割作成くん";
+  }, []);
+
   const [project, setProject] = useState(() => {
     try {
       const savedProject = localStorage.getItem(STORAGE_KEY_PROJECT);
@@ -285,39 +288,23 @@ export default function ScheduleApp() {
 
   const handleContextMenu = (e, d, p, c, type=null, val=null) => { e.preventDefault(); setContextMenu({ x: e.pageX, y: e.pageY, d, p, c, type, val }); };
   
-  // --- v41: 名称変更とデータ移行ロジック ---
   const handleRenameHeader = (type, oldVal) => {
     const newVal = prompt(`「${oldVal}」の新しい名称を入力:`, oldVal);
     if (!newVal || newVal === oldVal) return;
-
-    // 1. Configの更新
     const newConfig = { ...currentConfig };
     if (type === 'date') newConfig.dates = newConfig.dates.map(d => d === oldVal ? newVal : d);
     else if (type === 'period') newConfig.periods = newConfig.periods.map(p => p === oldVal ? newVal : p);
     else if (type === 'class') newConfig.classes = newConfig.classes.map(c => c === oldVal ? newVal : c);
 
-    // 2. Scheduleデータの移行 (古いキーを新しいキーに置換)
     const newSchedule = {};
     Object.keys(currentSchedule).forEach(k => {
-      // k は "Date-Period-Class" の形式。単純な文字列置換ではなく、パーツごとに比較する
-      // しかし設定上、区切り文字と同じ文字が名称に含まれるとバグるが、簡易的に文字列置換で対応
-      // より安全にやるなら、現在のConfigからインデックスを特定する
       let newKey = k;
       if (type === 'date' && k.startsWith(`${oldVal}-`)) {
         newKey = k.replace(`${oldVal}-`, `${newVal}-`);
       } else if (type === 'class' && k.endsWith(`-${oldVal}`)) {
         newKey = k.substring(0, k.lastIndexOf(`-${oldVal}`)) + `-${newVal}`;
       } else if (type === 'period') {
-        // Periodは真ん中なので少し注意
-        const parts = k.split('-'); // 簡易分割
-        // 日付にハイフンが含まれる可能性を考慮して、後ろからマッチさせるか、
-        // あるいは現在のConfigと突き合わせる
-        // ここでは「Date-Period-Class」構造を前提に、文字列置換を行う
-        // 安全策: "Date-OldPeriod-Class" -> "Date-NewPeriod-Class"
-        // 日付部分とクラス部分を特定するのは難しいので、単純置換を行う
-        if (k.includes(`-${oldVal}-`)) {
-           newKey = k.replace(`-${oldVal}-`, `-${newVal}-`);
-        }
+        if (k.includes(`-${oldVal}-`)) newKey = k.replace(`-${oldVal}-`, `-${newVal}-`);
       }
       newSchedule[newKey] = currentSchedule[k];
     });
@@ -329,13 +316,7 @@ export default function ScheduleApp() {
   const handleMenuAction = (action) => {
     if (!contextMenu) return;
     const { d, p, c, type, val } = contextMenu;
-    
-    // v41: 名称変更
-    if (action === 'rename') {
-      handleRenameHeader(type, val);
-      setContextMenu(null);
-      return;
-    }
+    if (action === 'rename') { handleRenameHeader(type, val); setContextMenu(null); return; }
 
     if (type) {
       const ns = { ...currentSchedule }; let upd = false;
@@ -383,13 +364,9 @@ export default function ScheduleApp() {
 
   const handleClearUnlocked = () => { if(window.confirm("ロックされていないセルを全てクリアしますか？")) { const ns={}; Object.keys(currentSchedule).forEach(k=>{if(currentSchedule[k].locked)ns[k]=currentSchedule[k]}); const newTabs = project.tabs.map(t => t.id === project.activeTabId ? { ...t, schedule: ns } : t); pushHistory({ ...project, tabs: newTabs }); }};
   
-  // v41: 現在の設定をデフォルトとして保存
   const handleSaveAsDefault = () => {
     if(!window.confirm("現在の「講師設定」と「カレンダー構成」を初期値として保存しますか？\n次回リセット時にこの設定が読み込まれます。")) return;
-    const defaults = {
-      teachers: project.teachers,
-      config: activeTab.config
-    };
+    const defaults = { teachers: project.teachers, config: activeTab.config };
     localStorage.setItem(STORAGE_KEY_USER_DEFAULTS, JSON.stringify(defaults));
     alert("✅ 保存しました。\n次回からこの設定が初期値になります。");
   };
@@ -397,9 +374,8 @@ export default function ScheduleApp() {
   const handleResetAll = () => { if(window.confirm("全データ削除しますか？")) { localStorage.removeItem(STORAGE_KEY_PROJECT); window.location.reload(); }};
   const applyPattern = (pat) => { const newTabs = project.tabs.map(t => t.id === project.activeTabId ? { ...t, schedule: pat } : t); pushHistory({ ...project, tabs: newTabs }); setGeneratedPatterns([]); };
   const handleLoadJson = (e) => { const f=e.target.files[0]; if(!f)return; const r=new FileReader(); r.onload=(ev)=>{try{const data=JSON.parse(ev.target.result); pushHistory(cleanSchedule(data)); alert("読込完了");}catch{alert("エラー");}}; r.readAsText(f); e.target.value=''; };
-  const handleSaveJson = () => { const cleaned = cleanSchedule(project); const b=new Blob([JSON.stringify(cleaned,null,2)],{type:"application/json"}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`schedule_project_v41.json`; a.click(); };
+  const handleSaveJson = () => { const cleaned = cleanSchedule(project); const b=new Blob([JSON.stringify(cleaned,null,2)],{type:"application/json"}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`schedule_project_v42.json`; a.click(); };
 
-  // --- 自動作成ロジック (v40継承) ---
   const generateSchedule = () => {
     setIsGenerating(true);
     setTimeout(() => {
@@ -591,7 +567,7 @@ export default function ScheduleApp() {
       <style>{printStyle}</style>
 
       <div className="flex justify-between items-center mb-2 no-print bg-white p-3 rounded shadow-sm border-b border-gray-200">
-        <div className="flex items-center gap-2"><h1 className="text-xl font-bold text-gray-700">📅 時間割作成くん v41</h1><span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded border border-green-200">{saveStatus}</span></div>
+        <div className="flex items-center gap-2"><h1 className="text-xl font-bold text-gray-700">📅 時間割作成くん v42</h1><span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded border border-green-200">{saveStatus}</span></div>
         <div className="flex gap-2">
           <button onClick={handleSaveJson} className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 shadow text-sm font-bold">💾 プロジェクト保存</button>
           <button onClick={() => fileInputRef.current.click()} className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 shadow text-sm font-bold">📂 開く</button>
@@ -729,7 +705,6 @@ export default function ScheduleApp() {
                       <div><label className="text-xs font-bold text-gray-500">クラス (カンマ区切り)</label><textarea className="w-full border p-2 text-sm h-16 rounded" value={currentConfig.classes.join(", ")} onChange={(e) => handleListConfigChange('classes', e.target.value)} /></div>
                       <div className="bg-orange-50 p-2 rounded border border-orange-100"><label className="text-xs font-bold text-orange-800">必要コマ数 (目標)</label><div className="grid grid-cols-3 gap-2 mt-2">{commonSubjects.map(s => (<div key={s} className="flex justify-between bg-white p-1 border rounded"><span className="text-xs font-bold">{s}</span><input type="number" className="w-12 text-right text-sm" value={currentConfig.subjectCounts[s]||0} onChange={(e) => handleSubjectCountChange(s, e.target.value)} /></div>))}</div></div>
                       
-                      {/* v41: デフォルト保存ボタン */}
                       <div className="pt-2">
                          <button onClick={handleSaveAsDefault} className="w-full py-2 bg-gray-600 text-white font-bold rounded hover:bg-gray-700 shadow-sm text-sm">💾 現在の設定を初期値にする</button>
                       </div>
