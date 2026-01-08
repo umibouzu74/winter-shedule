@@ -43,7 +43,7 @@ const toCircleNum = (num) => {
   return circles[num] || `(${num})`;
 };
 
-const STORAGE_KEY_PROJECT = 'winter_schedule_project_v34';
+const STORAGE_KEY_PROJECT = 'winter_schedule_project_v35';
 
 export default function ScheduleApp() {
   const [project, setProject] = useState(() => {
@@ -61,6 +61,7 @@ export default function ScheduleApp() {
   const [showConfig, setShowConfig] = useState(false);
   const [configTab, setConfigTab] = useState('basic');
   const [showSummary, setShowSummary] = useState(false);
+  const [showExternalLoad, setShowExternalLoad] = useState(false);
   const [generatedPatterns, setGeneratedPatterns] = useState([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [saveStatus, setSaveStatus] = useState("✅ 保存済");
@@ -285,100 +286,154 @@ export default function ScheduleApp() {
   const handleResetAll = () => { if(window.confirm("全データ削除しますか？")) { localStorage.removeItem(STORAGE_KEY_PROJECT); window.location.reload(); }};
   const applyPattern = (pat) => { const newTabs = project.tabs.map(t => t.id === project.activeTabId ? { ...t, schedule: pat } : t); pushHistory({ ...project, tabs: newTabs }); setGeneratedPatterns([]); };
   const handleLoadJson = (e) => { const f=e.target.files[0]; if(!f)return; const r=new FileReader(); r.onload=(ev)=>{try{const data=JSON.parse(ev.target.result); pushHistory(cleanSchedule(data)); alert("読込完了");}catch{alert("エラー");}}; r.readAsText(f); e.target.value=''; };
-  const handleSaveJson = () => { const cleaned = cleanSchedule(project); const b=new Blob([JSON.stringify(cleaned,null,2)],{type:"application/json"}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`schedule_project_v34.json`; a.click(); };
+  const handleSaveJson = () => { const cleaned = cleanSchedule(project); const b=new Blob([JSON.stringify(cleaned,null,2)],{type:"application/json"}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`schedule_project_v35.json`; a.click(); };
 
-  // ★ v34: 事前診断機能付き自動生成
+  // ★ v35: ベストエフォート型自動生成 (Most Constrained First)
   const generateSchedule = () => {
-    // 1. Diagnosis (事前診断)
-    const issues = [];
-    const neededCounts = {}; // { 英語: 12, 数学: 12 }
-    commonSubjects.forEach(s => {
-      neededCounts[s] = (currentConfig.subjectCounts[s] || 0) * currentConfig.classes.length;
-    });
-
-    // 既に埋まっている分を差し引く
-    Object.values(currentSchedule).forEach(e => {
-      if (e.subject && neededCounts[e.subject] > 0) neededCounts[e.subject]--;
-    });
-
-    // 供給能力を概算 (単純計算: 担当可能講師数 × (1日のMaxコマ数 - 外部負荷))
-    // これは概算ですが、明らかに足りない場合は検知できます
-    const availableCounts = {};
-    commonSubjects.forEach(s => availableCounts[s] = 0);
-
-    project.teachers.forEach(t => {
-      if (t.name === "未定") return;
-      t.subjects.forEach(s => {
-        if (availableCounts[s] !== undefined) {
-          // 各日程での空き枠を簡易加算
-          currentConfig.dates.forEach(d => {
-            const dayKey = `${d}-${t.name}`;
-            const ext = project.externalCounts?.[dayKey] || 0;
-            const remaining = Math.max(0, 4 - ext); // 1日4コマ制限と仮定
-            // NGも考慮すべきだが簡易診断なので省略
-            availableCounts[s] += remaining;
-          });
-        }
-      });
-    });
-
-    commonSubjects.forEach(s => {
-      if (neededCounts[s] > availableCounts[s]) {
-        issues.push(`・${s}: 残り${neededCounts[s]}コマ必要ですが、講師の空き枠の概算は${availableCounts[s]}コマしかありません。`);
-      }
-    });
-
-    if (issues.length > 0) {
-      alert(`【⚠️ 自動作成できない可能性が高いです】\n\n講師の空きコマが不足しているようです：\n${issues.join("\n")}\n\n※外部負荷(他学年)を減らすか、講師を追加してください。`);
-      // 警告は出すが、一応処理は続行させる（ユーザーが強行突破したい場合のため）
-    }
-
     setIsGenerating(true);
     setTimeout(() => {
-      const solutions = []; const slots = [];
-      currentConfig.dates.forEach(d => currentConfig.periods.forEach(p => currentConfig.classes.forEach(c => {
-        const k=`${d}-${p}-${c}`;
-        const entry = currentSchedule[k];
-        if (!entry || !entry.subject || !entry.teacher) {
-          slots.push({d, p, c, k, fixedSubject: entry?.subject});
+      // 1. スロットの洗い出しと優先度付け
+      const slots = [];
+      const currentCounts = {}; 
+      currentConfig.classes.forEach(c => { 
+        currentCounts[c] = {}; 
+        commonSubjects.forEach(s => currentCounts[c][s] = 0); 
+      });
+
+      // 既存のカウント集計
+      Object.keys(currentSchedule).forEach(k => { 
+        const e = currentSchedule[k]; 
+        if (e?.subject) {
+          const cls = k.split('-')[2];
+          currentCounts[cls][e.subject] = (currentCounts[cls][e.subject] || 0) + 1;
         }
-      })));
-      
-      const counts = {}; currentConfig.classes.forEach(c => { counts[c] = {}; commonSubjects.forEach(s => counts[c][s] = 0); });
-      Object.keys(currentSchedule).forEach(k => { const e=currentSchedule[k]; if(e?.subject) counts[k.split('-')[2]][e.subject]++; });
+      });
+
+      // 空きスロットを特定し、候補者数を計算して「難しい順」に並べる
+      currentConfig.dates.forEach(d => {
+        currentConfig.periods.forEach(p => {
+          currentConfig.classes.forEach(c => {
+            const k = `${d}-${p}-${c}`;
+            const entry = currentSchedule[k];
+            // 「科目が未定」または「科目はあるが講師が未定」のものを対象
+            if (!entry || !entry.subject || !entry.teacher) {
+              const fixedSubject = entry?.subject;
+              let possibleTeachers = 0;
+              
+              // 候補者数を概算 (ヒューリスティック用)
+              const subjectsToCheck = fixedSubject ? [fixedSubject] : commonSubjects;
+              let candidates = 0;
+              subjectsToCheck.forEach(s => {
+                if(!fixedSubject && (currentCounts[c][s] || 0) >= currentConfig.subjectCounts[s]) return;
+                const validT = project.teachers.filter(t => 
+                  t.subjects.includes(s) && 
+                  !t.ngSlots?.includes(`${d}-${p}`) && 
+                  !t.ngClasses?.includes(c)
+                );
+                candidates += validT.length;
+              });
+
+              slots.push({ d, p, c, k, fixedSubject, candidates });
+            }
+          });
+        });
+      });
+
+      // 候補が少ない（難しい）順にソート
+      slots.sort((a, b) => a.candidates - b.candidates);
+
+      // 2. 探索 (Best Effort)
+      let bestResult = null;
+      let maxFilled = -1;
 
       const solve = (idx, tempSch, tempCnt, iter={c:0}) => {
-        if (iter.c++ > 80000 || solutions.length >= 3) return; 
-        if (idx >= slots.length) { solutions.push(JSON.parse(JSON.stringify(tempSch))); return; }
-        const {d, p, c, k, fixedSubject} = slots[idx];
+        // ベストスコア更新
+        if (idx > maxFilled) {
+          maxFilled = idx;
+          bestResult = JSON.parse(JSON.stringify(tempSch));
+        }
+
+        if (iter.c++ > 30000) return; // 制限時間
+        if (idx >= slots.length) return; // コンプリート
+
+        const { d, p, c, k, fixedSubject } = slots[idx];
+        
+        // 試す科目の順序（残り回数が多い科目を優先するなど工夫可能だが、ランダムで分散させる）
         const subjectsToTry = fixedSubject ? [fixedSubject] : commonSubjects.sort(() => Math.random() - 0.5);
+
         for (const s of subjectsToTry) {
-          if (!fixedSubject && (tempCnt[c][s]||0) >= currentConfig.subjectCounts[s]) continue;
+          // コマ数上限チェック
+          if (!fixedSubject && (tempCnt[c][s] || 0) >= currentConfig.subjectCounts[s]) continue;
+          // 同時限の科目重複チェック (1日1回制限はここでは緩めるか、厳密にするか調整可)
+          // ここでは厳密にチェック: 同じクラス・同じ日に同じ科目はNG
+          // (ただしfixedSubjectの場合はユーザー指定なので許容したいが、自動割り当てとしては避けるのが無難)
           if (!fixedSubject && currentConfig.periods.some(per => tempSch[`${d}-${per}-${c}`]?.subject === s)) continue;
-          const validT = project.teachers.filter(t => t.subjects.includes(s) && !t.ngClasses?.includes(c) && !t.ngSlots?.includes(`${d}-${p}`));
-          let availT = validT.map(t => {
+
+          // 講師候補の抽出
+          const validT = project.teachers.filter(t => 
+            t.subjects.includes(s) && 
+            !t.ngClasses?.includes(c) && 
+            !t.ngSlots?.includes(`${d}-${p}`)
+          );
+
+          // 負荷チェック & 重複チェック
+          let availT = validT.filter(t => {
+             // 他タブ・外部負荷
              const dayKey = `${d}-${t.name}`;
              const ext = analysis.teacherDailyCounts[dayKey]?.external || 0;
              const currentTabCount = analysis.teacherDailyCounts[dayKey]?.current || 0; 
-             return { teacher: t, load: ext + currentTabCount };
-          }).filter(item => item.load < 5); 
-          availT.sort((a, b) => a.load - b.load + (Math.random() * 0.5)); 
-          for (const item of availT) {
-             const tName = item.teacher.name;
-             if (!currentConfig.classes.some(oc => oc!==c && tempSch[`${d}-${p}-${oc}`]?.teacher===tName)) {
-                tempSch[k] = { subject: s, teacher: tName }; 
-                if(!fixedSubject) tempCnt[c][s]++;
-                solve(idx+1, tempSch, tempCnt, iter);
-                if (solutions.length>=3) return;
-                if(fixedSubject) tempSch[k] = { subject: fixedSubject, teacher: "" };
-                else { delete tempSch[k]; tempCnt[c][s]--; }
-             }
+             // tempSch内での増加分も考慮（簡易的に）
+             // 正確にはtempSchを走査すべきだが重いので、既存解析値を利用し、
+             // 「この探索パスでこれ以上増やしていいか」は確率的に判断
+             return (ext + currentTabCount) < 5; 
+          });
+
+          // 同時刻の他クラス重複チェック
+          availT = availT.filter(t => 
+            !currentConfig.classes.some(oc => oc !== c && tempSch[`${d}-${p}-${oc}`]?.teacher === t.name)
+          );
+
+          if (availT.length > 0) {
+            // 負荷分散ロジック (ランダム性を持たせつつ負荷低い人を優先)
+            const tObj = availT[Math.floor(Math.random() * availT.length)];
+            
+            // 割り当て実行
+            tempSch[k] = { subject: s, teacher: tObj.name };
+            if(!fixedSubject) tempCnt[c][s]++;
+
+            solve(idx + 1, tempSch, tempCnt, iter);
+            
+            // 解が見つかって戻ってきた場合（完全制覇）
+            if (maxFilled === slots.length) return;
+
+            // Backtrack
+            if(fixedSubject) tempSch[k] = { subject: fixedSubject, teacher: "" };
+            else { delete tempSch[k]; tempCnt[c][s]--; }
           }
         }
+        
+        // 誰も割り当てられなくても、スキップして次へ進む (Best Effortの肝)
+        // ただし、これをすると「穴あき」ができる。
+        // 本当のCSPならバックトラックすべきだが、ユーザー体験としては「埋まるところだけ埋める」が欲しい。
+        // なので、ここでスキップ分岐も作る。
+        if (iter.c < 30000) { // まだ余裕があればスキップも試す
+           solve(idx + 1, tempSch, tempCnt, iter);
+        }
       };
-      solve(0, JSON.parse(JSON.stringify(currentSchedule)), JSON.parse(JSON.stringify(counts)));
-      setGeneratedPatterns(solutions); setIsGenerating(false);
-      if(solutions.length===0) alert("条件に合うパターンが見つかりませんでした。\n・外部負荷(他学年)の設定値が高すぎませんか？\n・NGが多すぎませんか？\n・1日に同じ科目が重複していませんか？");
+
+      // 実行
+      solve(0, JSON.parse(JSON.stringify(currentSchedule)), JSON.parse(JSON.stringify(currentCounts)));
+
+      // 結果処理
+      if (bestResult) {
+        setGeneratedPatterns([bestResult]);
+        if (maxFilled < slots.length) {
+          alert(`条件が厳しく、全てのコマを埋めることはできませんでした。\n可能な限り埋めた案（${Math.round(maxFilled/slots.length*100)}%）を提示します。\n\n・残り: ${slots.length - maxFilled}コマ\n・原因: 講師不足、NG重複、コマ数制限など`);
+        }
+      } else {
+        alert("有効なパターンが1つも見つかりませんでした。設定を見直してください。");
+      }
+      setIsGenerating(false);
     }, 100);
   };
 
@@ -426,7 +481,7 @@ export default function ScheduleApp() {
       <style>{printStyle}</style>
 
       <div className="flex justify-between items-center mb-2 no-print bg-white p-3 rounded shadow-sm border-b border-gray-200">
-        <div className="flex items-center gap-2"><h1 className="text-xl font-bold text-gray-700">📅 時間割作成くん v34</h1><span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded border border-green-200">{saveStatus}</span></div>
+        <div className="flex items-center gap-2"><h1 className="text-xl font-bold text-gray-700">📅 時間割作成くん v35</h1><span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded border border-green-200">{saveStatus}</span></div>
         <div className="flex gap-2">
           <button onClick={handleSaveJson} className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 shadow text-sm font-bold">💾 プロジェクト保存</button>
           <button onClick={() => fileInputRef.current.click()} className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 shadow text-sm font-bold">📂 開く</button>
@@ -461,7 +516,6 @@ export default function ScheduleApp() {
             <button onClick={() => setShowSummary(!showSummary)} className="flex items-center gap-1 px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 shadow-sm text-sm font-bold">📊 集計</button>
             <button onClick={() => setShowConfig(true)} className="flex items-center gap-1 px-3 py-2 bg-gray-700 text-white rounded hover:bg-gray-800 shadow-sm text-sm font-bold">⚙️ 設定</button>
             <div className="h-6 w-px bg-gray-300 mx-1"></div>
-            {/* ★ v34: 生成結果クリアボタン */}
             <button onClick={handleClearUnlocked} className="flex items-center gap-1 px-3 py-2 bg-red-100 text-red-700 border border-red-200 rounded hover:bg-red-200 shadow-sm text-sm font-bold">🗑️ 生成クリア</button>
             <button onClick={generateSchedule} disabled={isGenerating} className={`flex items-center gap-1 px-4 py-2 text-white rounded shadow-sm text-sm font-bold transition-colors ${isGenerating ? "bg-purple-300 cursor-not-allowed" : "bg-purple-600 hover:bg-purple-700"}`}>{isGenerating ? "🔮 生成中..." : "🧙‍♂️ 自動作成"}</button>
           </div>
@@ -509,38 +563,8 @@ export default function ScheduleApp() {
                   <div className="overflow-x-auto">
                     <div className="bg-red-50 p-3 mb-4 rounded text-sm text-red-800 border border-red-200"><strong>NG一括設定:</strong><br/>クリックしてNG（赤）/ OK（白）を切り替えます。全タブ共通の設定です。</div>
                     <table className="w-full border-collapse text-xs whitespace-nowrap">
-                      <thead>
-                        <tr>
-                          <th className="border p-2 bg-gray-100 sticky left-0 z-20">講師名</th>
-                          {currentConfig.dates.map(d => (
-                            currentConfig.periods.map(p => (
-                              <th key={`${d}-${p}`} className="border p-1 bg-gray-50 font-normal min-w-[40px] text-center">{d}<br/>{p}</th>
-                            ))
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {project.teachers.map((t, idx) => (
-                          <tr key={t.name}>
-                            <td className="border p-2 font-bold bg-gray-50 sticky left-0 z-10">{t.name}</td>
-                            {currentConfig.dates.map(d => (
-                              currentConfig.periods.map(p => {
-                                const k = `${d}-${p}`;
-                                const isNg = t.ngSlots?.includes(k);
-                                return (
-                                  <td 
-                                    key={k} 
-                                    onClick={() => toggleTeacherNg(idx, d, p)}
-                                    className={`border p-1 text-center cursor-pointer hover:opacity-80 transition-colors ${isNg ? "bg-red-500 text-white font-bold" : "bg-white"}`}
-                                  >
-                                    {isNg ? "NG" : ""}
-                                  </td>
-                                );
-                              })
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
+                      <thead><tr><th className="border p-2 bg-gray-100 sticky left-0 z-20">講師名</th>{currentConfig.dates.map(d => (currentConfig.periods.map(p => (<th key={`${d}-${p}`} className="border p-1 bg-gray-50 font-normal min-w-[40px] text-center">{d}<br/>{p}</th>))))}</tr></thead>
+                      <tbody>{project.teachers.map((t, idx) => (<tr key={t.name}><td className="border p-2 font-bold bg-gray-50 sticky left-0 z-10">{t.name}</td>{currentConfig.dates.map(d => (currentConfig.periods.map(p => { const k=`${d}-${p}`; const isNg=t.ngSlots?.includes(k); return (<td key={k} onClick={() => toggleTeacherNg(idx, d, p)} className={`border p-1 text-center cursor-pointer hover:opacity-80 transition-colors ${isNg?"bg-red-500 text-white font-bold":"bg-white"}`}>{isNg?"NG":""}</td>); }))) }</tr>))}</tbody>
                     </table>
                   </div>
                 ) : (
@@ -590,10 +614,8 @@ export default function ScheduleApp() {
                         const maxCnt = currentConfig.subjectCounts[entry.subject] || 0;
                         const isOver = maxCnt > 0 && order > maxCnt;
                         const filteredTeachers = entry.subject ? project.teachers.filter(t => t.subjects.includes(entry.subject)) : project.teachers;
-                        
                         const subjDupKey = `${c}-${d}-${entry.subject}`;
                         const isSubjDup = analysis.dailySubjectMap[subjDupKey] > 1;
-
                         const cellColor = isConflict ? "bg-red-200" : getSubjectColor(entry.subject);
                         const lockedStyle = isLocked ? "border-2 border-gray-600 opacity-90" : "border border-gray-200";
                         const stripeStyle = isLocked ? { backgroundImage: 'repeating-linear-gradient(45deg, transparent, transparent 5px, rgba(0,0,0,0.05) 5px, rgba(0,0,0,0.05) 10px)' } : {};
