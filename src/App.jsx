@@ -71,6 +71,9 @@ export default function ScheduleApp() {
   const [clipboard, setClipboard] = useState(null);
   const [isCompact, setIsCompact] = useState(false);
 
+  // ★ v24: ドラッグ＆ドロップ用のState
+  const [dragSource, setDragSource] = useState(null); // {key, data}
+
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -114,7 +117,6 @@ export default function ScheduleApp() {
     }
   }, []);
 
-  // キーボードショートカット (Undo/Redo)
   useEffect(() => {
     const handleKeyDown = (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
@@ -130,47 +132,65 @@ export default function ScheduleApp() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [history, historyIndex]);
 
-  // ★ v23: セル間移動ロジック
   const handleCellNavigation = (e, dIndex, pIndex, cIndex, type) => {
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
-      e.preventDefault(); // デフォルトの選択変更を防ぐ
-
-      let nextD = dIndex;
-      let nextP = pIndex;
-      let nextC = cIndex;
-      let nextType = type;
-
-      if (e.key === 'ArrowUp') {
-        if (pIndex > 0) nextP--;
-        else if (dIndex > 0) {
-          nextD--;
-          nextP = config.periods.length - 1;
-        }
-      } else if (e.key === 'ArrowDown') {
-        if (pIndex < config.periods.length - 1) nextP++;
-        else if (dIndex < config.dates.length - 1) {
-          nextD++;
-          nextP = 0;
-        }
-      } else if (e.key === 'ArrowLeft') {
-        if (type === 'teacher') nextType = 'subject';
-        else if (cIndex > 0) {
-          nextC--;
-          nextType = 'teacher';
-        }
-      } else if (e.key === 'ArrowRight') {
-        if (type === 'subject') nextType = 'teacher';
-        else if (cIndex < config.classes.length - 1) {
-          nextC++;
-          nextType = 'subject';
-        }
-      }
-
-      const nextId = `select-${nextD}-${nextP}-${nextC}-${nextType}`;
-      const nextElement = document.getElementById(nextId);
+      e.preventDefault();
+      let nextD = dIndex, nextP = pIndex, nextC = cIndex, nextType = type;
+      if (e.key === 'ArrowUp') { if (pIndex > 0) nextP--; else if (dIndex > 0) { nextD--; nextP = config.periods.length - 1; } }
+      else if (e.key === 'ArrowDown') { if (pIndex < config.periods.length - 1) nextP++; else if (dIndex < config.dates.length - 1) { nextD++; nextP = 0; } }
+      else if (e.key === 'ArrowLeft') { if (type === 'teacher') nextType = 'subject'; else if (cIndex > 0) { nextC--; nextType = 'teacher'; } }
+      else if (e.key === 'ArrowRight') { if (type === 'subject') nextType = 'teacher'; else if (cIndex < config.classes.length - 1) { nextC++; nextType = 'subject'; } }
+      const nextElement = document.getElementById(`select-${nextD}-${nextP}-${nextC}-${nextType}`);
       if (nextElement) nextElement.focus();
     }
   };
+
+  // --- ★ v24: ドラッグ＆ドロップ処理 ---
+  const handleDragStart = (e, key, data) => {
+    if (data.locked || !data.subject) {
+      e.preventDefault(); // ロック済みor空セルはドラッグ不可
+      return;
+    }
+    setDragSource({ key, data });
+    e.dataTransfer.effectAllowed = "move";
+    // ドラッグ中の見た目を半透明に
+    e.target.style.opacity = '0.5';
+  };
+
+  const handleDragEnd = (e) => {
+    e.target.style.opacity = '1'; // 見た目を戻す
+    setDragSource(null);
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault(); // これがないとドロップできない
+    e.dataTransfer.dropEffect = "move";
+  };
+
+  const handleDrop = (e, targetKey, targetData) => {
+    e.preventDefault();
+    if (!dragSource || dragSource.key === targetKey || targetData.locked) return;
+
+    // 交換ロジック
+    const newSchedule = { ...schedule };
+    
+    // 移動元に移動先の内容を入れる（移動先が空なら空になる＝移動）
+    // 移動先が埋まっていれば交換になる
+    newSchedule[dragSource.key] = { 
+      ...targetData, 
+      locked: false // ロック情報は交換せず解除（安全のため）
+    }; 
+    
+    // 移動先に移動元の内容を入れる
+    newSchedule[targetKey] = { 
+      ...dragSource.data, 
+      locked: false // ロックは解除
+    };
+
+    updateScheduleWithHistory(newSchedule);
+  };
+
+  // ------------------------------------
 
   const handleContextMenu = (e, date, period, cls) => {
     e.preventDefault();
@@ -417,7 +437,7 @@ export default function ScheduleApp() {
     if (pRows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(pRows), "個人別");
     XLSX.writeFile(wb, `時間割_${new Date().toISOString().slice(0,10)}.xlsx`);
   };
-  const handleSaveJson = () => { const blob = new Blob([JSON.stringify({ version: 23, config, schedule }, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `schedule_v23.json`; link.click(); };
+  const handleSaveJson = () => { const blob = new Blob([JSON.stringify({ version: 24, config, schedule }, null, 2)], { type: "application/json" }); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `schedule_v24.json`; link.click(); };
 
   const printStyle = `
     @media print {
@@ -437,7 +457,7 @@ export default function ScheduleApp() {
 
       {/* ヘッダー・ボタン群 */}
       <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4 no-print">
-        <div><h1 className="text-2xl font-bold text-gray-800">冬期講習 時間割エディタ v23</h1><p className="text-sm text-gray-600">キーボード操作対応版</p></div>
+        <div><h1 className="text-2xl font-bold text-gray-800">冬期講習 時間割エディタ v24</h1><p className="text-sm text-gray-600">ドラッグ＆ドロップ実装版</p></div>
         
         <div className="flex items-center gap-4 bg-white p-2 rounded shadow border px-4 flex-1 justify-center max-w-2xl mx-auto">
            <div className="flex flex-col w-32"><div className="flex justify-between text-xs mb-1 font-bold text-gray-600"><span>進捗: {dashboard.progress}%</span><span>{dashboard.filledCount}/{dashboard.totalRequired}</span></div><div className="h-2 bg-gray-200 rounded overflow-hidden"><div className="h-full bg-green-500 rounded transition-all duration-500" style={{width: `${dashboard.progress}%`}}></div></div></div>
@@ -492,6 +512,7 @@ export default function ScheduleApp() {
         </div>
       )}
       
+      {/* メインテーブル */}
       <div className={`overflow-auto shadow-lg rounded-lg border border-gray-300 max-h-[80vh] print-container ${isCompact ? "text-xs" : "text-sm"}`}>
         <table className="border-collapse w-full bg-white text-left relative">
           <thead className="sticky top-0 z-30 bg-gray-800 text-white shadow-md">
@@ -523,11 +544,19 @@ export default function ScheduleApp() {
                       const isDimmed = highlightTeacher && currentTeacher !== highlightTeacher;
 
                       return (
-                        <td key={cls} id={key} className={`border-r last:border-0 ${isCompact ? "p-1" : "p-2"}`} onContextMenu={(e) => handleContextMenu(e, date, period, cls)}>
+                        <td 
+                          key={cls} id={key} className={`border-r last:border-0 ${isCompact ? "p-1" : "p-2"}`} 
+                          onContextMenu={(e) => handleContextMenu(e, date, period, cls)}
+                          // ★ v24: ドラッグイベント
+                          draggable={!isLocked && !!currentSubject}
+                          onDragStart={(e) => handleDragStart(e, key, currentData)}
+                          onDragOver={handleDragOver}
+                          onDrop={(e) => handleDrop(e, key, currentData)}
+                          onDragEnd={handleDragEnd}
+                        >
                           <div className={`flex flex-col rounded ${borderColor} ${cellBgColor} ${isLocked ? "bg-opacity-100 shadow-inner" : "bg-opacity-90"} ${isDimmed ? "opacity-25 grayscale" : "transition-opacity"} ${isCompact ? "gap-0 p-1" : "gap-2 p-2"}`}>
                             <div className="flex justify-between items-start">
                                <div className="relative flex-1">
-                                  {/* ★ v23: キーボード操作用のID付与とイベントハンドラ */}
                                   <select 
                                     id={`select-${dIndex}-${pIndex}-${cIndex}-subject`}
                                     className={`w-full font-medium focus:outline-none cursor-pointer appearance-none bg-transparent ${isCountOver ? "text-red-600 font-bold" : "text-gray-800"} ${isLocked ? "pointer-events-none" : ""}`} 
