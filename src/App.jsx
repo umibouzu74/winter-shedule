@@ -462,6 +462,7 @@ export default function ScheduleApp() {
   };
 
   const handleDownloadExcel = () => {
+    // 1. 時間割シート
     const headerRow = ["日付", "時限", ...config.classes];
     const dataRows = [];
     config.dates.forEach(date => {
@@ -484,6 +485,7 @@ export default function ScheduleApp() {
     ws1['!cols'] = [{ wch: 15 }, { wch: 15 }, ...config.classes.map(() => ({ wch: 20 }))];
     XLSX.utils.book_append_sheet(wb, ws1, "時間割");
 
+    // 2. 講師別集計シート
     const teacherTotals = {};
     Object.keys(schedule).forEach(key => {
       const t = schedule[key]?.teacher;
@@ -496,27 +498,61 @@ export default function ScheduleApp() {
     const ws2 = XLSX.utils.aoa_to_sheet(summaryRows);
     XLSX.utils.book_append_sheet(wb, ws2, "講師別集計");
 
+    // ★ v18 新機能: 個人別シフトシート
+    const personalRows = [];
+    config.teachers.forEach(teacher => {
+      if (teacher.name === "未定") return; // 未定はスキップ
+
+      // 担当コマがあるかチェック
+      const mySlots = [];
+      config.dates.forEach(date => {
+        config.periods.forEach(period => {
+          config.classes.forEach(cls => {
+            const key = `${date}-${period}-${cls}`;
+            if (schedule[key]?.teacher === teacher.name) {
+              mySlots.push({ date, period, cls, subject: schedule[key].subject });
+            }
+          });
+        });
+      });
+
+      if (mySlots.length > 0) {
+        personalRows.push([`■ ${teacher.name} 先生`]);
+        personalRows.push(["日付", "時限", "担当クラス", "科目"]);
+        mySlots.forEach(slot => {
+          personalRows.push([slot.date, slot.period, slot.cls, slot.subject]);
+        });
+        personalRows.push([]); // 空行
+        personalRows.push([]); 
+      }
+    });
+    
+    if (personalRows.length > 0) {
+      const ws3 = XLSX.utils.aoa_to_sheet(personalRows);
+      ws3['!cols'] = [{ wch: 15 }, { wch: 10 }, { wch: 15 }, { wch: 10 }];
+      XLSX.utils.book_append_sheet(wb, ws3, "個人別シフト");
+    }
+
     XLSX.writeFile(wb, `時間割_${new Date().toISOString().slice(0,10)}.xlsx`);
   };
 
   const handleSaveJson = () => {
-    const saveData = { version: 17, config, schedule };
+    const saveData = { version: 18, config, schedule };
     const blob = new Blob([JSON.stringify(saveData, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `schedule_v17_${new Date().toISOString().slice(0,10)}.json`;
+    link.download = `schedule_v18_${new Date().toISOString().slice(0,10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
 
   return (
     <div className="p-4 bg-gray-50 min-h-screen font-sans">
-      {/* --- ヘッダー --- */}
       <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">冬期講習 時間割エディタ v17</h1>
-          <p className="text-sm text-gray-600">UI改善: 固定ヘッダー & 設定モーダル</p>
+          <h1 className="text-2xl font-bold text-gray-800">冬期講習 時間割エディタ v18</h1>
+          <p className="text-sm text-gray-600">個人別シフト出力機能搭載</p>
         </div>
         <div className="flex items-center gap-2">
            <span className="text-xs text-green-600 font-bold mr-2">{saveStatus}</span>
@@ -544,7 +580,6 @@ export default function ScheduleApp() {
         </div>
       )}
 
-      {/* --- 自動生成結果 (モーダル) --- */}
       {generatedPatterns.length > 0 && (
         <div className="mb-6 p-4 bg-purple-50 border-2 border-purple-200 rounded-lg animate-fade-in">
           <h2 className="font-bold text-lg text-purple-900 mb-2">✨ 生成結果</h2>
@@ -563,7 +598,6 @@ export default function ScheduleApp() {
         </div>
       )}
 
-      {/* --- ★ 設定モーダル (v17: ポップアップ化) --- */}
       {showConfig && (
         <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex justify-center items-center p-4">
           <div className="bg-white rounded-lg shadow-2xl w-full max-w-6xl max-h-[90vh] overflow-y-auto p-6 relative animate-fade-in">
@@ -671,11 +705,8 @@ export default function ScheduleApp() {
         </div>
       )}
       
-      {/* --- メイン時間割テーブル --- */}
-      {/* ★ v17: テーブルコンテナの最大高さを指定し、スクロール可能にする */}
       <div className="overflow-auto shadow-lg rounded-lg border border-gray-300 max-h-[80vh]">
         <table className="border-collapse w-full bg-white text-sm text-left relative">
-          {/* ★ v17: ヘッダー固定 (sticky top-0 z-20) */}
           <thead className="sticky top-0 z-30 bg-gray-800 text-white shadow-md">
             <tr>
               <th className="p-3 w-24 border-r border-gray-600 sticky left-0 z-40 bg-gray-800">日付</th>
@@ -686,17 +717,14 @@ export default function ScheduleApp() {
           <tbody>
             {config.dates.map(date => (
               config.periods.map((period, pIndex) => {
-                // ★ v17: 1日の終わりかどうか判定 (太い境界線用)
                 const isDayEnd = pIndex === config.periods.length - 1;
                 const borderClass = isDayEnd ? "border-b-4 border-gray-400" : "border-b hover:bg-gray-50";
 
                 return (
                   <tr key={`${date}-${period}`} className={borderClass}>
                     {pIndex === 0 && (
-                      // ★ v17: 日付列固定 (sticky left-0 z-20)
                       <td rowSpan={config.periods.length} className="p-3 font-bold align-top bg-gray-100 border-r sticky left-0 z-20 shadow-sm border-b-4 border-gray-400">{date}</td>
                     )}
-                    {/* ★ v17: 時限列固定 (sticky left-24) */}
                     <td className={`p-3 border-r bg-gray-50 text-gray-700 sticky left-24 z-10 shadow-sm ${isDayEnd ? "border-b-4 border-gray-400" : ""}`}>{period}</td>
                     
                     {config.classes.map(cls => {
