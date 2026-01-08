@@ -43,7 +43,7 @@ const toCircleNum = (num) => {
   return circles[num] || `(${num})`;
 };
 
-const STORAGE_KEY_PROJECT = 'winter_schedule_project_v33';
+const STORAGE_KEY_PROJECT = 'winter_schedule_project_v34';
 
 export default function ScheduleApp() {
   const [project, setProject] = useState(() => {
@@ -59,7 +59,7 @@ export default function ScheduleApp() {
   const [history, setHistory] = useState([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [showConfig, setShowConfig] = useState(false);
-  const [configTab, setConfigTab] = useState('basic'); // 'basic' | 'external' | 'ng'
+  const [configTab, setConfigTab] = useState('basic');
   const [showSummary, setShowSummary] = useState(false);
   const [generatedPatterns, setGeneratedPatterns] = useState([]);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -69,6 +69,7 @@ export default function ScheduleApp() {
   const [clipboard, setClipboard] = useState(null);
   const [isCompact, setIsCompact] = useState(false);
   const [dragSource, setDragSource] = useState(null);
+  const [editingNgIndex, setEditingNgIndex] = useState(null);
 
   const fileInputRef = useRef(null);
 
@@ -100,6 +101,7 @@ export default function ScheduleApp() {
     if (history.length === 0) { setHistory([project]); setHistoryIndex(0); }
   }, []);
 
+  // Analysis
   const analysis = useMemo(() => {
     const conflictMap = {}; const subjectOrders = {}; const dailySubjectMap = {}; const errorKeys = []; const teacherDailyCounts = {};
     const globalUsage = {}; 
@@ -164,6 +166,7 @@ export default function ScheduleApp() {
     return { progress: total > 0 ? Math.round((filled/total)*100) : 0, filled, total };
   }, [currentSchedule, currentConfig]);
 
+  // Handlers
   const handleAddTab = () => {
     const name = prompt("新しいタブの名前:");
     if (!name) return;
@@ -212,8 +215,6 @@ export default function ScheduleApp() {
     if(t.subjects.includes(subj)) t.subjects = t.subjects.filter(s=>s!==subj); else t.subjects.push(subj);
     pushHistory({ ...project, teachers: newTeachers });
   };
-  
-  // ★ v33: NG一括操作用
   const toggleTeacherNg = (idx, d, p) => {
     const newTeachers = [...project.teachers]; const t = newTeachers[idx]; const k = `${d}-${p}`;
     if(!t.ngSlots) t.ngSlots = []; if(t.ngSlots.includes(k)) t.ngSlots = t.ngSlots.filter(x=>x!==k); else t.ngSlots.push(k);
@@ -280,13 +281,58 @@ export default function ScheduleApp() {
     return { ...proj, tabs: newTabs };
   };
 
-  const handleClearUnlocked = () => { if(window.confirm("ロック以外を削除しますか？")) { const ns={}; Object.keys(currentSchedule).forEach(k=>{if(currentSchedule[k].locked)ns[k]=currentSchedule[k]}); const newTabs = project.tabs.map(t => t.id === project.activeTabId ? { ...t, schedule: ns } : t); pushHistory({ ...project, tabs: newTabs }); }};
+  const handleClearUnlocked = () => { if(window.confirm("ロックされていないセル（生成結果など）を全てクリアしますか？")) { const ns={}; Object.keys(currentSchedule).forEach(k=>{if(currentSchedule[k].locked)ns[k]=currentSchedule[k]}); const newTabs = project.tabs.map(t => t.id === project.activeTabId ? { ...t, schedule: ns } : t); pushHistory({ ...project, tabs: newTabs }); }};
   const handleResetAll = () => { if(window.confirm("全データ削除しますか？")) { localStorage.removeItem(STORAGE_KEY_PROJECT); window.location.reload(); }};
   const applyPattern = (pat) => { const newTabs = project.tabs.map(t => t.id === project.activeTabId ? { ...t, schedule: pat } : t); pushHistory({ ...project, tabs: newTabs }); setGeneratedPatterns([]); };
   const handleLoadJson = (e) => { const f=e.target.files[0]; if(!f)return; const r=new FileReader(); r.onload=(ev)=>{try{const data=JSON.parse(ev.target.result); pushHistory(cleanSchedule(data)); alert("読込完了");}catch{alert("エラー");}}; r.readAsText(f); e.target.value=''; };
-  const handleSaveJson = () => { const cleaned = cleanSchedule(project); const b=new Blob([JSON.stringify(cleaned,null,2)],{type:"application/json"}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`schedule_project_v33.json`; a.click(); };
+  const handleSaveJson = () => { const cleaned = cleanSchedule(project); const b=new Blob([JSON.stringify(cleaned,null,2)],{type:"application/json"}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`schedule_project_v34.json`; a.click(); };
 
+  // ★ v34: 事前診断機能付き自動生成
   const generateSchedule = () => {
+    // 1. Diagnosis (事前診断)
+    const issues = [];
+    const neededCounts = {}; // { 英語: 12, 数学: 12 }
+    commonSubjects.forEach(s => {
+      neededCounts[s] = (currentConfig.subjectCounts[s] || 0) * currentConfig.classes.length;
+    });
+
+    // 既に埋まっている分を差し引く
+    Object.values(currentSchedule).forEach(e => {
+      if (e.subject && neededCounts[e.subject] > 0) neededCounts[e.subject]--;
+    });
+
+    // 供給能力を概算 (単純計算: 担当可能講師数 × (1日のMaxコマ数 - 外部負荷))
+    // これは概算ですが、明らかに足りない場合は検知できます
+    const availableCounts = {};
+    commonSubjects.forEach(s => availableCounts[s] = 0);
+
+    project.teachers.forEach(t => {
+      if (t.name === "未定") return;
+      t.subjects.forEach(s => {
+        if (availableCounts[s] !== undefined) {
+          // 各日程での空き枠を簡易加算
+          currentConfig.dates.forEach(d => {
+            const dayKey = `${d}-${t.name}`;
+            const ext = project.externalCounts?.[dayKey] || 0;
+            const remaining = Math.max(0, 4 - ext); // 1日4コマ制限と仮定
+            // NGも考慮すべきだが簡易診断なので省略
+            availableCounts[s] += remaining;
+          });
+        }
+      });
+    });
+
+    commonSubjects.forEach(s => {
+      if (neededCounts[s] > availableCounts[s]) {
+        issues.push(`・${s}: 残り${neededCounts[s]}コマ必要ですが、講師の空き枠の概算は${availableCounts[s]}コマしかありません。`);
+      }
+    });
+
+    if (issues.length > 0) {
+      alert(`【⚠️ 自動作成できない可能性が高いです】\n\n講師の空きコマが不足しているようです：\n${issues.join("\n")}\n\n※外部負荷(他学年)を減らすか、講師を追加してください。`);
+      // 警告は出すが、一応処理は続行させる（ユーザーが強行突破したい場合のため）
+    }
+
     setIsGenerating(true);
     setTimeout(() => {
       const solutions = []; const slots = [];
@@ -332,7 +378,7 @@ export default function ScheduleApp() {
       };
       solve(0, JSON.parse(JSON.stringify(currentSchedule)), JSON.parse(JSON.stringify(counts)));
       setGeneratedPatterns(solutions); setIsGenerating(false);
-      if(solutions.length===0) alert("条件に合うパターンが見つかりませんでした。");
+      if(solutions.length===0) alert("条件に合うパターンが見つかりませんでした。\n・外部負荷(他学年)の設定値が高すぎませんか？\n・NGが多すぎませんか？\n・1日に同じ科目が重複していませんか？");
     }, 100);
   };
 
@@ -380,7 +426,7 @@ export default function ScheduleApp() {
       <style>{printStyle}</style>
 
       <div className="flex justify-between items-center mb-2 no-print bg-white p-3 rounded shadow-sm border-b border-gray-200">
-        <div className="flex items-center gap-2"><h1 className="text-xl font-bold text-gray-700">📅 時間割作成くん v33</h1><span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded border border-green-200">{saveStatus}</span></div>
+        <div className="flex items-center gap-2"><h1 className="text-xl font-bold text-gray-700">📅 時間割作成くん v34</h1><span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded border border-green-200">{saveStatus}</span></div>
         <div className="flex gap-2">
           <button onClick={handleSaveJson} className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 shadow text-sm font-bold">💾 プロジェクト保存</button>
           <button onClick={() => fileInputRef.current.click()} className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 shadow text-sm font-bold">📂 開く</button>
@@ -415,7 +461,8 @@ export default function ScheduleApp() {
             <button onClick={() => setShowSummary(!showSummary)} className="flex items-center gap-1 px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 shadow-sm text-sm font-bold">📊 集計</button>
             <button onClick={() => setShowConfig(true)} className="flex items-center gap-1 px-3 py-2 bg-gray-700 text-white rounded hover:bg-gray-800 shadow-sm text-sm font-bold">⚙️ 設定</button>
             <div className="h-6 w-px bg-gray-300 mx-1"></div>
-            <button onClick={handleClearUnlocked} className="flex items-center gap-1 px-3 py-2 bg-red-100 text-red-700 border border-red-200 rounded hover:bg-red-200 shadow-sm text-sm font-bold">🗑️ 削除</button>
+            {/* ★ v34: 生成結果クリアボタン */}
+            <button onClick={handleClearUnlocked} className="flex items-center gap-1 px-3 py-2 bg-red-100 text-red-700 border border-red-200 rounded hover:bg-red-200 shadow-sm text-sm font-bold">🗑️ 生成クリア</button>
             <button onClick={generateSchedule} disabled={isGenerating} className={`flex items-center gap-1 px-4 py-2 text-white rounded shadow-sm text-sm font-bold transition-colors ${isGenerating ? "bg-purple-300 cursor-not-allowed" : "bg-purple-600 hover:bg-purple-700"}`}>{isGenerating ? "🔮 生成中..." : "🧙‍♂️ 自動作成"}</button>
           </div>
         </div>
@@ -459,7 +506,6 @@ export default function ScheduleApp() {
                     <table className="w-full border-collapse text-sm"><thead><tr><th className="border p-2 bg-gray-100 min-w-[100px] sticky left-0 z-10">講師名</th>{currentConfig.dates.map(d => <th key={d} className="border p-2 bg-gray-100 min-w-[60px] text-center">{d}</th>)}</tr></thead><tbody>{project.teachers.map(t => (<tr key={t.name}><td className="border p-2 font-bold bg-gray-50 sticky left-0 z-10">{t.name}</td>{currentConfig.dates.map(d => (<td key={d} className="border p-0"><input type="number" min="0" className="w-full h-full p-2 text-center focus:bg-blue-50 focus:outline-none" value={project.externalCounts?.[`${d}-${t.name}`] || ""} placeholder="-" onChange={(e) => handleExternalCountChange(d, t.name, e.target.value)} /></td>))}</tr>))}</tbody></table>
                   </div>
                 ) : configTab === 'ng' ? (
-                  /* ★ v33: NG一括設定マトリクス */
                   <div className="overflow-x-auto">
                     <div className="bg-red-50 p-3 mb-4 rounded text-sm text-red-800 border border-red-200"><strong>NG一括設定:</strong><br/>クリックしてNG（赤）/ OK（白）を切り替えます。全タブ共通の設定です。</div>
                     <table className="w-full border-collapse text-xs whitespace-nowrap">
@@ -545,7 +591,6 @@ export default function ScheduleApp() {
                         const isOver = maxCnt > 0 && order > maxCnt;
                         const filteredTeachers = entry.subject ? project.teachers.filter(t => t.subjects.includes(entry.subject)) : project.teachers;
                         
-                        // ★ v33: 科目重複チェック (1日1回制限)
                         const subjDupKey = `${c}-${d}-${entry.subject}`;
                         const isSubjDup = analysis.dailySubjectMap[subjDupKey] > 1;
 
@@ -563,20 +608,16 @@ export default function ScheduleApp() {
                                 <div className="relative flex-1">
                                   <select 
                                     id={`select-${dIdx}-${pIdx}-${cIdx}-subject`}
-                                    // ★ v33: 重複時は文字を赤くする
                                     className={`w-full bg-transparent font-bold focus:outline-none cursor-pointer text-gray-800 ${isSubjDup ? "text-red-600 underline" : ""} ${isCompact ? "text-[10px]" : "text-sm"} ${isLocked ? "pointer-events-none" : ""}`}
                                     value={entry.subject || ""}
                                     onChange={(e) => handleAssign(d, p, c, 'subject', e.target.value)}
                                     onKeyDown={(e) => handleCellNavigation(e, dIdx, pIdx, cIdx, 'subject')}
                                   >
-                                    <option value="">-</option>
-                                    {commonSubjects.map(s => {
-                                      // ★ v33: 選択肢自体もdisabledにする（既存機能維持）
+                                    <option value="">-</option>{commonSubjects.map(s => {
                                       const isAlreadyUsed = analysis.dailySubjectMap[`${c}-${d}-${s}`] > 0 && entry.subject !== s;
                                       return <option key={s} value={s} disabled={isAlreadyUsed} className={isAlreadyUsed ? "bg-gray-200" : ""}>{s}</option>;
                                     })}
                                   </select>
-                                  {/* ★ v33: 重複アラート表示 */}
                                   {isSubjDup && <span className="absolute left-0 -top-4 bg-red-600 text-white text-[9px] px-1 rounded z-50">⚠️1日2回</span>}
                                   {entry.subject && !isSubjDup && <span className={`absolute right-0 top-0 text-[9px] px-1 rounded-full ${isOver ? "bg-red-500 text-white" : "bg-white/60 text-gray-600 border"}`}>{toCircleNum(order)}{isOver&&"!"}</span>}
                                 </div>
