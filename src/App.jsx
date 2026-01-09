@@ -23,11 +23,11 @@ const DEFAULT_INITIAL_TEACHERS = [
   { name: "未定", subjects: ["英語", "数学", "国語", "理科", "社会"], ngSlots: [], ngClasses: [], priorityClasses: [] }
 ];
 
-// 基本設定（新規タブ作成時などのベース）
+// 基本設定
 const DEFAULT_TAB_CONFIG_BASE = {
   dates: ["12/25(木)", "12/26(金)", "12/27(土)", "1/4(日)", "1/6(火)", "1/7(水)"],
   periods: ["1限 (13:00~)", "2限 (14:10~)", "3限 (15:20~)"],
-  classes: ["３S", "３A", "３B", "３C"], // デフォルトは中3に合わせておく
+  classes: ["３S", "３A", "３B", "３C"],
   subjectCounts: { "英語": 4, "数学": 4, "国語": 3, "理科": 4, "社会": 3 }
 };
 
@@ -44,7 +44,7 @@ const toCircleNum = (num) => {
   return circles[num] || `(${num})`;
 };
 
-const STORAGE_KEY_PROJECT = 'winter_schedule_project_v43'; // Key updated for v43
+const STORAGE_KEY_PROJECT = 'winter_schedule_project_v44'; // Key updated for v44
 const STORAGE_KEY_USER_DEFAULTS = 'winter_schedule_user_defaults';
 
 export default function ScheduleApp() {
@@ -59,9 +59,6 @@ export default function ScheduleApp() {
       
       const savedDefaults = localStorage.getItem(STORAGE_KEY_USER_DEFAULTS);
       if (savedDefaults) {
-        // ユーザーが保存したデフォルト設定がある場合はそれを使う
-        // ただしタブ構成まで保存していない場合は下のデフォルトロジックに任せることも可能だが
-        // ここではシンプルに「保存されたもの」を優先する
         const defaults = JSON.parse(savedDefaults);
         return {
           teachers: defaults.teachers || DEFAULT_INITIAL_TEACHERS,
@@ -71,7 +68,6 @@ export default function ScheduleApp() {
       }
     } catch (e) { console.error("Load failed", e); }
     
-    // ★ v43: 初期状態の変更（中3・中1,2の2タブ構成）
     return {
       teachers: DEFAULT_INITIAL_TEACHERS,
       activeTabId: 1,
@@ -79,19 +75,13 @@ export default function ScheduleApp() {
         { 
           id: 1, 
           name: "中３", 
-          config: { 
-            ...DEFAULT_TAB_CONFIG_BASE, 
-            classes: ["３S", "３A", "３B", "３C"] 
-          }, 
+          config: { ...DEFAULT_TAB_CONFIG_BASE, classes: ["３S", "３A", "３B", "３C"] }, 
           schedule: {} 
         },
         { 
           id: 2, 
           name: "中１・２", 
-          config: { 
-            ...DEFAULT_TAB_CONFIG_BASE, 
-            classes: ["１S", "１AB", "１附属", "２S", "２AB", "２C", "２附属"] 
-          }, 
+          config: { ...DEFAULT_TAB_CONFIG_BASE, classes: ["１S", "１AB", "１附属", "２S", "２AB", "２C", "２附属"] }, 
           schedule: {} 
         }
       ]
@@ -397,8 +387,9 @@ export default function ScheduleApp() {
   const handleResetAll = () => { if(window.confirm("全データ削除しますか？")) { localStorage.removeItem(STORAGE_KEY_PROJECT); window.location.reload(); }};
   const applyPattern = (pat) => { const newTabs = project.tabs.map(t => t.id === project.activeTabId ? { ...t, schedule: pat } : t); pushHistory({ ...project, tabs: newTabs }); setGeneratedPatterns([]); };
   const handleLoadJson = (e) => { const f=e.target.files[0]; if(!f)return; const r=new FileReader(); r.onload=(ev)=>{try{const data=JSON.parse(ev.target.result); pushHistory(cleanSchedule(data)); alert("読込完了");}catch{alert("エラー");}}; r.readAsText(f); e.target.value=''; };
-  const handleSaveJson = () => { const cleaned = cleanSchedule(project); const b=new Blob([JSON.stringify(cleaned,null,2)],{type:"application/json"}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`schedule_project_v43.json`; a.click(); };
+  const handleSaveJson = () => { const cleaned = cleanSchedule(project); const b=new Blob([JSON.stringify(cleaned,null,2)],{type:"application/json"}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`schedule_project_v44.json`; a.click(); };
 
+  // --- v44: MRV（Minimum Remaining Values）による賢い並び替え ---
   const generateSchedule = () => {
     setIsGenerating(true);
     setTimeout(() => {
@@ -443,6 +434,7 @@ export default function ScheduleApp() {
         }
       });
 
+      // 1. 全てのスロットを収集
       currentConfig.dates.forEach(d => currentConfig.periods.forEach(p => currentConfig.classes.forEach(c => {
         const k=`${d}-${p}-${c}`;
         const entry = currentSchedule[k];
@@ -451,7 +443,31 @@ export default function ScheduleApp() {
         }
       })));
       
-      slots.sort(() => Math.random() - 0.5);
+      // ★ v44改良: MRVヒューリスティックによる並び替え
+      // 各スロットについて「配置可能な候補者数」を計算し、少ない順（難しい順）に並べる
+      slots.forEach(slot => {
+        let validCandidates = 0;
+        const subjectsToCheck = slot.fixedSubject ? [slot.fixedSubject] : commonSubjects;
+        
+        // 簡易チェック: このスロットに入りうる先生の数をカウント（科目は未定なら全科目分）
+        subjectsToCheck.forEach(subj => {
+          project.teachers.forEach(t => {
+             // 基本的な適合性チェック（Subject, NG日, NGクラス）
+             if (t.subjects.includes(subj) && 
+                 !t.ngSlots?.includes(`${slot.d}-${slot.p}`) && 
+                 !t.ngClasses?.includes(slot.c)) {
+                 validCandidates++;
+             }
+          });
+        });
+        slot.score = validCandidates;
+      });
+
+      // スコアが小さい（候補が少ない＝難しい）順にソート。同じならランダム。
+      slots.sort((a, b) => {
+        if (a.score === b.score) return Math.random() - 0.5;
+        return a.score - b.score;
+      });
 
       const solve = (idx, tempSch, tempCnt, tempDaily, iter={c:0}) => {
         if (iter.c++ > 500000 || solutions.length >= 1) return;
@@ -590,7 +606,7 @@ export default function ScheduleApp() {
       <style>{printStyle}</style>
 
       <div className="flex justify-between items-center mb-2 no-print bg-white p-3 rounded shadow-sm border-b border-gray-200">
-        <div className="flex items-center gap-2"><h1 className="text-xl font-bold text-gray-700">📅 時間割作成くん v43</h1><span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded border border-green-200">{saveStatus}</span></div>
+        <div className="flex items-center gap-2"><h1 className="text-xl font-bold text-gray-700">📅 時間割作成くん v44</h1><span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded border border-green-200">{saveStatus}</span></div>
         <div className="flex gap-2">
           <button onClick={handleSaveJson} className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 shadow text-sm font-bold">💾 プロジェクト保存</button>
           <button onClick={() => fileInputRef.current.click()} className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 shadow text-sm font-bold">📂 開く</button>
