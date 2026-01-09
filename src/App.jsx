@@ -23,10 +23,11 @@ const DEFAULT_INITIAL_TEACHERS = [
   { name: "未定", subjects: ["英語", "数学", "国語", "理科", "社会"], ngSlots: [], ngClasses: [], priorityClasses: [] }
 ];
 
+// 基本設定（新規タブ作成時などのベース）
 const DEFAULT_TAB_CONFIG_BASE = {
   dates: ["12/25(木)", "12/26(金)", "12/27(土)", "1/4(日)", "1/6(火)", "1/7(水)"],
   periods: ["1限 (13:00~)", "2限 (14:10~)", "3限 (15:20~)"],
-  classes: ["Sクラス", "Aクラス", "Bクラス", "Cクラス"],
+  classes: ["３S", "３A", "３B", "３C"], // デフォルトは中3に合わせておく
   subjectCounts: { "英語": 4, "数学": 4, "国語": 3, "理科": 4, "社会": 3 }
 };
 
@@ -43,11 +44,10 @@ const toCircleNum = (num) => {
   return circles[num] || `(${num})`;
 };
 
-const STORAGE_KEY_PROJECT = 'winter_schedule_project_v42'; // Key updated for v42
+const STORAGE_KEY_PROJECT = 'winter_schedule_project_v43'; // Key updated for v43
 const STORAGE_KEY_USER_DEFAULTS = 'winter_schedule_user_defaults';
 
 export default function ScheduleApp() {
-  // v42: アプリ起動時にタブ名を変更
   useEffect(() => {
     document.title = "時間割作成くん";
   }, []);
@@ -59,6 +59,9 @@ export default function ScheduleApp() {
       
       const savedDefaults = localStorage.getItem(STORAGE_KEY_USER_DEFAULTS);
       if (savedDefaults) {
+        // ユーザーが保存したデフォルト設定がある場合はそれを使う
+        // ただしタブ構成まで保存していない場合は下のデフォルトロジックに任せることも可能だが
+        // ここではシンプルに「保存されたもの」を優先する
         const defaults = JSON.parse(savedDefaults);
         return {
           teachers: defaults.teachers || DEFAULT_INITIAL_TEACHERS,
@@ -68,10 +71,30 @@ export default function ScheduleApp() {
       }
     } catch (e) { console.error("Load failed", e); }
     
+    // ★ v43: 初期状態の変更（中3・中1,2の2タブ構成）
     return {
       teachers: DEFAULT_INITIAL_TEACHERS,
       activeTabId: 1,
-      tabs: [{ id: 1, name: "メイン(午後)", config: { ...DEFAULT_TAB_CONFIG_BASE }, schedule: {} }]
+      tabs: [
+        { 
+          id: 1, 
+          name: "中３", 
+          config: { 
+            ...DEFAULT_TAB_CONFIG_BASE, 
+            classes: ["３S", "３A", "３B", "３C"] 
+          }, 
+          schedule: {} 
+        },
+        { 
+          id: 2, 
+          name: "中１・２", 
+          config: { 
+            ...DEFAULT_TAB_CONFIG_BASE, 
+            classes: ["１S", "１AB", "１附属", "２S", "２AB", "２C", "２附属"] 
+          }, 
+          schedule: {} 
+        }
+      ]
     };
   });
 
@@ -374,7 +397,7 @@ export default function ScheduleApp() {
   const handleResetAll = () => { if(window.confirm("全データ削除しますか？")) { localStorage.removeItem(STORAGE_KEY_PROJECT); window.location.reload(); }};
   const applyPattern = (pat) => { const newTabs = project.tabs.map(t => t.id === project.activeTabId ? { ...t, schedule: pat } : t); pushHistory({ ...project, tabs: newTabs }); setGeneratedPatterns([]); };
   const handleLoadJson = (e) => { const f=e.target.files[0]; if(!f)return; const r=new FileReader(); r.onload=(ev)=>{try{const data=JSON.parse(ev.target.result); pushHistory(cleanSchedule(data)); alert("読込完了");}catch{alert("エラー");}}; r.readAsText(f); e.target.value=''; };
-  const handleSaveJson = () => { const cleaned = cleanSchedule(project); const b=new Blob([JSON.stringify(cleaned,null,2)],{type:"application/json"}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`schedule_project_v42.json`; a.click(); };
+  const handleSaveJson = () => { const cleaned = cleanSchedule(project); const b=new Blob([JSON.stringify(cleaned,null,2)],{type:"application/json"}); const u=URL.createObjectURL(b); const a=document.createElement('a'); a.href=u; a.download=`schedule_project_v43.json`; a.click(); };
 
   const generateSchedule = () => {
     setIsGenerating(true);
@@ -567,7 +590,7 @@ export default function ScheduleApp() {
       <style>{printStyle}</style>
 
       <div className="flex justify-between items-center mb-2 no-print bg-white p-3 rounded shadow-sm border-b border-gray-200">
-        <div className="flex items-center gap-2"><h1 className="text-xl font-bold text-gray-700">📅 時間割作成くん v42</h1><span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded border border-green-200">{saveStatus}</span></div>
+        <div className="flex items-center gap-2"><h1 className="text-xl font-bold text-gray-700">📅 時間割作成くん v43</h1><span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded border border-green-200">{saveStatus}</span></div>
         <div className="flex gap-2">
           <button onClick={handleSaveJson} className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded hover:bg-blue-700 shadow text-sm font-bold">💾 プロジェクト保存</button>
           <button onClick={() => fileInputRef.current.click()} className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-white rounded hover:bg-green-700 shadow text-sm font-bold">📂 開く</button>
